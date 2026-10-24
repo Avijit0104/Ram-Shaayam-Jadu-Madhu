@@ -1,30 +1,60 @@
 # RSJM — Ram · Shaayam · Jadu · Madhu
 
-A card-passing game for 1–6 people, played in the browser. It works on Android phones. If fewer than 4 people join, bots fill the empty seats.
+A real-time card-passing game for 1–6 people, played in the browser on Android phones or any device.
 
-## How to play
+### ▶ Play now: **[ram-shaayam-jadu-madhu.onrender.com](https://ram-shaayam-jadu-madhu.onrender.com)**
 
-- Every game has at least 4 seats. If only 1–3 people join, bots fill the rest (1 person + 3 bots, 2 + 2, 3 + 1).
-- With 4 players there are 16 cards: 4 each of **Ram**, **Shaayam**, **Jadu** and **Madhu**. Every player is dealt 4 cards.
-- With 5 or 6 players the host types one extra card name per extra player. Each new name adds 4 cards, so 5 players use 20 cards and 6 players use 24.
-- You only see your own cards.
-- On your turn, pass one card to the next player. You **can't pass the card you just received**. You can pass it on a later turn.
-- The first player to hold **4 cards with the same name** wins the round and gets a point. The starting player rotates each round.
+> If nobody has played for a while, the first load can take up to a minute while the server wakes up.
 
-## Run locally
+---
 
-```bash
-npm install
-npm start          # http://localhost:3000
-npm test           # unit tests (node:test)
+## Starting a game
+
+1. Open the [game link](https://ram-shaayam-jadu-madhu.onrender.com) and enter your name.
+2. One person taps **Create a new room** and shares the 4-letter room code, or taps **Share invite link** to send it on WhatsApp or anywhere else.
+3. Friends open the link, or enter the code and tap **Join**.
+4. The host taps **Start game**. If fewer than 4 people have joined, bots fill the empty seats.
+
+## Rules
+
+- **Players:** every game has at least 4 seats. If only 1–3 people join, 🤖 bots take the rest (1 person + 3 bots, 2 + 2, 3 + 1). Up to 6 people can play.
+- **Cards:** there are 4 cards of each name. With 4 players the names are **Ram**, **Shaayam**, **Jadu** and **Madhu** (16 cards). For a 5th or 6th player, the host picks one more name each, which adds 4 more cards (20 or 24 cards).
+- **Dealing:** every player gets 4 random cards. You see only your own cards.
+- **Passing:** on your turn, give one card to the next player. You **can't pass the card you just received** (it shows a 🔒). You can pass it on a later turn.
+- **Winning:** the first player to hold **4 cards with the same name** wins the round and gets ★ 1 point. Then everyone's cards are shown, and the next round starts with the next player.
+
+## Features
+
+- Rooms with a 4-letter code and a shareable invite link.
+- Each player's phone shows only their own cards. The server never sends anyone else's cards until the round ends.
+- If your phone sleeps or you switch apps, you get your seat back automatically.
+- Your phone vibrates when it's your turn, and the screen stays on during a game.
+- Bots fill empty seats so you can play even when your friends aren't online.
+- Scores are kept across rounds, and the host can remove players who left.
+
+## Tech
+
+[Node.js](https://nodejs.org) · [Express](https://expressjs.com) · [Socket.IO](https://socket.io), with a plain HTML/CSS/JavaScript frontend and no build step. Hosted on [Render](https://render.com).
+
+```
+server.js          Express + Socket.IO server
+src/game.js        Card rules: deal, pass, win check
+src/rooms.js       Rooms, lobby, rounds, what each player is allowed to see
+src/bots.js        Bot players
+public/            The game screens (index.html, client.js, style.css)
+test/              Tests
 ```
 
-To try it with friends on the same Wi-Fi, open `http://<your-PC-ip>:3000` on each phone.
+## Run it on your own computer
 
-## Deploy on Render (free)
+```bash
+git clone https://github.com/Avijit0104/Ram-Shaayam-Jadu-Madhu.git
+cd Ram-Shaayam-Jadu-Madhu
+npm install
+npm start          # open http://localhost:3000
+npm test           # run the tests
+```
 
-1. Push this repo to GitHub.
-2. On https://render.com choose **New → Blueprint** and pick this repo. `render.yaml` sets everything up. You can also use **New → Web Service** with build command `npm install` and start command `npm start`.
-3. Open the `https://<name>.onrender.com` URL on your phones. One person creates a room and shares the 4-letter code or the invite link.
+---
 
-The free Render plan sleeps after about 15 minutes with no visitors, so the first load can take up to a minute. Rooms are kept in memory, so a restart or redeploy ends any games in progress.
+Created by **Avijit Bose** · [GitHub](https://github.com/Avijit0104)

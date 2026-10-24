@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-RSJM ("Ram-Shaayam-Jadu-Madhu") is a real-time multiplayer card-passing game for 1–6 people (bots fill seats up to 4), played in the browser (mainly on Android phones). It is deployed to Render.com from the GitHub repo `Avijit0104/Ram-Shaayam-Jadu-Madhu`. See README.md for the player-facing rules.
+RSJM ("Ram-Shaayam-Jadu-Madhu") is a real-time multiplayer card-passing game for 1–6 people (bots fill seats up to 4), played in the browser (mainly on Android phones). It's live at https://ram-shaayam-jadu-madhu.onrender.com, and Render auto-deploys every push to `main` on GitHub `Avijit0104/Ram-Shaayam-Jadu-Madhu`. See README.md for the player-facing rules.
+
+The author is Avijit Bose (git: `Avijit0104 <avibose000@gmail.com>`). Every screen must show "Created by Avijit Bose": the fixed `footer.credit` in `public/index.html`. Fixed-bottom UI (`.actionbar`, `.overlay`, `.toast`) is offset by `--credit-h` so it sits above the footer.
 
 ## Commands
 
