@@ -74,7 +74,8 @@
   }
   function playerName(id) {
     const p = player(id);
-    return p ? p.name : '?';
+    if (!p) return '?';
+    return p.bot ? '🤖 ' + p.name : p.name;
   }
   function nameIndex(name) {
     const i = state.round.names.indexOf(name);
@@ -160,7 +161,8 @@
         <details class="panel rules">
           <summary>How to play</summary>
           <ol>
-            <li>4 to 6 players. Each player gets 4 cards. There are 4 cards of each name: Ram, Shaayam, Jadu, Madhu (the host adds one more name for each player beyond 4).</li>
+            <li>1 to 6 players. If fewer than 4 people join, bots fill the empty seats.</li>
+            <li>Each player gets 4 cards. There are 4 cards of each name: Ram, Shaayam, Jadu, Madhu (the host adds one more name for each player beyond 4).</li>
             <li>You only see your own cards.</li>
             <li>On your turn, pass one card to the next player.</li>
             <li>You can't pass the card you just received. You can pass it on a later turn.</li>
@@ -215,11 +217,15 @@
         </div>`;
     }
 
+    const bots = state.botsNeeded;
+    const botWord = `${bots} bot${bots > 1 ? 's' : ''}`;
     let startHint = '';
-    if (n < state.minPlayers) startHint = `Waiting for ${state.minPlayers - n} more player${state.minPlayers - n > 1 ? 's' : ''}…`;
-    else if (needed && state.extraNames.slice(0, needed).filter((x) => x).length < needed) {
+    if (needed && state.extraNames.slice(0, needed).filter((x) => x).length < needed) {
       startHint = host ? `Choose ${needed} extra card name${needed > 1 ? 's' : ''} above` : 'Host is choosing extra card names…';
     }
+    const startLabel = bots
+      ? `Start with ${botWord}`
+      : (state.roundNumber ? 'Start next game' : 'Start game');
 
     app.innerHTML = `
       <div class="stack">
@@ -244,6 +250,7 @@
                 ${host && p.id !== state.youId ? `<button class="danger tiny" data-kick="${esc(p.id)}">Remove</button>` : ''}
               </li>`).join('')}
           </ul>
+          ${bots ? `<p class="muted small" style="margin:10px 0 0">🤖 ${botWord} will fill the empty seat${bots > 1 ? 's' : ''}. Wait for friends or start now.</p>` : ''}
         </div>
         <div class="panel stack">
           <h3>Cards in play</h3>
@@ -253,7 +260,7 @@
       </div>
       <div class="actionbar"><div>
         ${host
-          ? `<button id="start" class="primary block" ${startHint ? 'disabled' : ''}>${state.roundNumber ? 'Start next game' : 'Start game'}</button>`
+          ? `<button id="start" class="primary block" ${startHint ? 'disabled' : ''}>${startLabel}</button>`
           : `<div class="status">Waiting for the host to start…</div>`}
         ${startHint ? `<div class="center muted small" style="margin-top:6px">${esc(startHint)}</div>` : ''}
       </div></div>`;
@@ -329,7 +336,7 @@
       if (!p.connected) cls.push('offline');
       return `<div class="${cls.join(' ')}">
         <div class="seat-order">${i + 1}</div>
-        <div class="seat-name">${esc(p.name)}</div>
+        <div class="seat-name">${esc(playerName(id))}</div>
         <div class="backs">${'<span class="back"></span>'.repeat(p.cardCount)}</div>
         <div class="seat-meta">★ ${p.score}${p.connected ? '' : ' · offline'}</div>
       </div>`;
@@ -411,7 +418,7 @@
             </div>`).join('')}
         </div>
         <table class="scores">
-          ${ranked.map((p) => `<tr><td>${esc(p.name)}</td><td>★ ${p.score}</td></tr>`).join('')}
+          ${ranked.map((p) => `<tr><td>${esc(playerName(p.id))}</td><td>★ ${p.score}</td></tr>`).join('')}
         </table>
         ${isHost()
           ? `<button id="next" class="primary block">Next round</button>

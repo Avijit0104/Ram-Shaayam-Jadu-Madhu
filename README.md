@@ -1,9 +1,10 @@
 # RSJM — Ram · Shaayam · Jadu · Madhu
 
-A 4–6 player card-passing game you play in the browser. It works on Android phones.
+A card-passing game for 1–6 people, played in the browser. It works on Android phones. If fewer than 4 people join, bots fill the empty seats.
 
 ## How to play
 
+- Every game has at least 4 seats. If only 1–3 people join, bots fill the rest (1 person + 3 bots, 2 + 2, 3 + 1).
 - With 4 players there are 16 cards: 4 each of **Ram**, **Shaayam**, **Jadu** and **Madhu**. Every player is dealt 4 cards.
 - With 5 or 6 players the host types one extra card name per extra player. Each new name adds 4 cards, so 5 players use 20 cards and 6 players use 24.
 - You only see your own cards.

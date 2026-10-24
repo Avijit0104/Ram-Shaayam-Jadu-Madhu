@@ -25,8 +25,27 @@ const socketCounts = new Map(); // token -> number of open sockets
 function broadcast(room) {
   if (!room) return;
   for (const p of room.players) {
-    io.to(channel(p.token)).emit('state', store.viewFor(room, p.id));
+    if (!p.bot) io.to(channel(p.token)).emit('state', store.viewFor(room, p.id));
   }
+  scheduleBot(room);
+}
+
+// Bots move on a short timer so humans can follow the cards going round.
+// At most one pending timer per room; the ticket makes stale timers no-ops.
+const BOT_DELAY_MS = 1200;
+const botTimers = new Map(); // room code -> timeout
+
+function scheduleBot(room) {
+  if (botTimers.has(room.code)) return;
+  const ticket = store.pendingBotTurn(room);
+  if (!ticket) return;
+  const timer = setTimeout(() => {
+    botTimers.delete(ticket.code);
+    const updated = store.botPass(ticket);
+    if (updated) broadcast(updated);
+    else if (store.rooms.has(ticket.code)) scheduleBot(store.rooms.get(ticket.code));
+  }, BOT_DELAY_MS + Math.random() * 800);
+  botTimers.set(room.code, timer);
 }
 
 function sendHome(token, notice) {

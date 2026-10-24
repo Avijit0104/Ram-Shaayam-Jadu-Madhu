@@ -3,6 +3,8 @@
 // In-memory room store: lobby management, round lifecycle and per-player views.
 // Players are identified by a secret `token` (kept in the browser's localStorage,
 // sent on the socket handshake) and a public `id` that is safe to show to others.
+// Bots (`bot: true`, `token: null`) exist only while a game runs: they are added on
+// start to fill seats up to MIN_PLAYERS and removed when the room returns to the lobby.
 
 const crypto = require('crypto');
 const {
@@ -14,6 +16,7 @@ const {
   currentPlayerId,
   passCard,
 } = require('./game');
+const { BOT_NAMES, chooseBotCard } = require('./bots');
 
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ'; // no I/O to avoid confusion with 1/0
 const MAX_PLAYER_NAME = 16;
@@ -44,7 +47,7 @@ class RoomStore {
   }
 
   playerForToken(room, token) {
-    return room.players.find((p) => p.token === token) || null;
+    return (token && room.players.find((p) => p.token === token)) || null;
   }
 
   requireMembership(token) {
@@ -72,14 +75,35 @@ class RoomStore {
     }
   }
 
-  newPlayer(token, name) {
+  newPlayer(token, name, bot = false) {
     return {
       id: crypto.randomBytes(6).toString('hex'),
       token,
       name,
+      bot,
       connected: true,
       score: 0,
     };
+  }
+
+  humans(room) {
+    return room.players.filter((p) => !p.bot);
+  }
+
+  botsNeeded(room) {
+    return Math.max(0, MIN_PLAYERS - this.humans(room).length);
+  }
+
+  addBots(room) {
+    const taken = new Set(room.players.map((p) => p.name.toLowerCase()));
+    const free = BOT_NAMES.filter((n) => !taken.has(n.toLowerCase()));
+    for (let i = this.botsNeeded(room); i > 0; i--) {
+      room.players.push(this.newPlayer(null, free.shift() || `Bot ${i}`, true));
+    }
+  }
+
+  removeBots(room) {
+    room.players = this.humans(room);
   }
 
   // ---- lobby --------------------------------------------------------------
@@ -155,15 +179,17 @@ class RoomStore {
 
   removePlayer(room, player, notice) {
     room.players = room.players.filter((p) => p !== player);
-    if (room.players.length === 0) {
+    const humans = this.humans(room);
+    if (humans.length === 0) {
       this.rooms.delete(room.code);
       return null;
     }
-    if (room.hostId === player.id) room.hostId = room.players[0].id;
+    if (room.hostId === player.id) room.hostId = humans[0].id;
     if (room.phase !== 'lobby') {
       // A round can't continue with a missing hand.
       room.phase = 'lobby';
       room.round = null;
+      this.removeBots(room);
       notice += ' — back to the lobby';
     }
     room.notice = notice;
@@ -183,6 +209,7 @@ class RoomStore {
   }
 
   // Base names plus as many host-chosen names as there are players beyond 4.
+  // Called before bots are added, so bots never require extra names.
   cardNamesFor(room) {
     const needed = room.players.length - BASE_NAMES.length;
     const extras = room.extraNames.slice(0, Math.max(0, needed));
@@ -205,10 +232,10 @@ class RoomStore {
   startGame(token) {
     const { room } = this.requireHost(token);
     if (room.phase !== 'lobby') throw new GameError('Game already running');
-    const n = room.players.length;
-    if (n < MIN_PLAYERS) throw new GameError(`Need at least ${MIN_PLAYERS} players`);
-    if (n > MAX_PLAYERS) throw new GameError(`At most ${MAX_PLAYERS} players`);
-    this.deal(room, this.cardNamesFor(room));
+    if (room.players.length > MAX_PLAYERS) throw new GameError(`At most ${MAX_PLAYERS} players`);
+    const names = this.cardNamesFor(room);
+    this.addBots(room);
+    this.deal(room, names);
     return room;
   }
 
@@ -224,6 +251,7 @@ class RoomStore {
     room.phase = 'lobby';
     room.round = null;
     room.notice = null;
+    this.removeBots(room);
     this.touch(room);
     return room;
   }
@@ -242,14 +270,39 @@ class RoomStore {
   pass(token, cardId) {
     const { room, player } = this.requireMembership(token);
     if (room.phase !== 'playing') throw new GameError('No round in progress');
-    passCard(room.round, player.id, cardId);
+    this.applyPass(room, player.id, cardId);
+    return room;
+  }
+
+  // If it's a bot's turn, returns a ticket identifying this exact turn, else null.
+  pendingBotTurn(room) {
+    if (!room || room.phase !== 'playing') return null;
+    const current = room.players.find((p) => p.id === currentPlayerId(room.round));
+    if (!current || !current.bot) return null;
+    return { code: room.code, roundNumber: room.roundNumber, passCount: room.round.passCount };
+  }
+
+  // Plays the bot move for a ticket from pendingBotTurn, if that turn is still current.
+  botPass(ticket) {
+    const room = this.rooms.get(ticket.code);
+    const now = this.pendingBotTurn(room);
+    if (!now || now.roundNumber !== ticket.roundNumber || now.passCount !== ticket.passCount) {
+      return null;
+    }
+    const botId = currentPlayerId(room.round);
+    const card = chooseBotCard(room.round.hands[botId], room.round.receivedCardId, this.rng);
+    this.applyPass(room, botId, card.id);
+    return room;
+  }
+
+  applyPass(room, playerId, cardId) {
+    passCard(room.round, playerId, cardId);
     if (room.round.winner) {
       const winner = room.players.find((p) => p.id === room.round.winner.playerId);
       if (winner) winner.score++;
       room.phase = 'roundOver';
     }
     this.touch(room);
-    return room;
   }
 
   // ---- connection tracking ------------------------------------------------
@@ -267,8 +320,8 @@ class RoomStore {
   sweep() {
     const cutoff = this.now() - ROOM_IDLE_MS;
     for (const room of this.rooms.values()) {
-      if (room.lastActivity < cutoff && room.players.every((p) => !p.connected)) {
-        for (const p of room.players) this.tokens.delete(p.token);
+      if (room.lastActivity < cutoff && this.humans(room).every((p) => !p.connected)) {
+        for (const p of this.humans(room)) this.tokens.delete(p.token);
         this.rooms.delete(room.code);
       }
     }
@@ -291,11 +344,13 @@ class RoomStore {
       baseNames: BASE_NAMES,
       extraNames: room.extraNames,
       neededExtraNames: Math.max(0, room.players.length - BASE_NAMES.length),
+      botsNeeded: room.phase === 'lobby' ? this.botsNeeded(room) : 0,
       minPlayers: MIN_PLAYERS,
       maxPlayers: MAX_PLAYERS,
       players: room.players.map((p) => ({
         id: p.id,
         name: p.name,
+        bot: p.bot,
         connected: p.connected,
         score: p.score,
         cardCount: round && round.hands[p.id] ? round.hands[p.id].length : 0,

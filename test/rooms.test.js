@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { RoomStore } = require('../src/rooms');
+const { chooseBotCard } = require('../src/bots');
 
 const tok = (n) => String(n).padStart(32, '0');
 
@@ -37,9 +38,7 @@ test('rejoining with the same token keeps the seat', () => {
   assert.equal(room.players[1].name, 'P2');
 });
 
-test('only host can start, and needs 4 players', () => {
-  const { store } = roomWith(3);
-  assert.throws(() => store.startGame(tok(1)), /at least 4/);
+test('only host can start; 4+ humans means no bots', () => {
   const { store: s4, room } = roomWith(4);
   assert.throws(() => s4.startGame(tok(2)), /Only the host/);
   s4.startGame(tok(1));
@@ -115,4 +114,74 @@ test('kick only works for host in lobby', () => {
   assert.equal(kickedToken, tok(3));
   assert.equal(room.players.length, 3);
   assert.equal(store.roomForToken(tok(3)), null);
+});
+
+test('bots fill empty seats up to 4 and leave on return to lobby', () => {
+  for (const humans of [1, 2, 3]) {
+    const { store, room } = roomWith(humans);
+    assert.equal(store.viewFor(room, room.players[0].id).botsNeeded, 4 - humans);
+    store.startGame(tok(1));
+    assert.equal(room.players.length, 4);
+    assert.equal(room.players.filter((p) => p.bot).length, 4 - humans);
+    assert.equal(room.round.names.length, 4);
+    store.toLobby(tok(1));
+    assert.equal(room.players.length, humans);
+  }
+});
+
+test('bot names never clash with human names', () => {
+  const store = new RoomStore();
+  const room = store.createRoom(tok(1), 'raju');
+  store.startGame(tok(1));
+  const names = room.players.map((p) => p.name.toLowerCase());
+  assert.equal(new Set(names).size, 4);
+});
+
+test('a solo player can finish a round against bots', () => {
+  const store = new RoomStore();
+  const room = store.createRoom(tok(1), 'Solo');
+  store.startGame(tok(1));
+  const me = room.players[0];
+  for (let i = 0; i < 10000 && room.phase === 'playing'; i++) {
+    const ticket = store.pendingBotTurn(room);
+    if (ticket) {
+      assert.ok(store.botPass(ticket));
+    } else {
+      const r = room.round;
+      const card = chooseBotCard(r.hands[me.id], r.receivedCardId);
+      store.pass(tok(1), card.id);
+    }
+  }
+  assert.equal(room.phase, 'roundOver');
+});
+
+test('stale bot tickets are ignored', () => {
+  const store = new RoomStore();
+  const room = store.createRoom(tok(1), 'Solo');
+  store.startGame(tok(1));
+  // Hand the turn to a bot, grab its ticket, then let it move.
+  if (!store.pendingBotTurn(room)) {
+    const r = room.round;
+    store.pass(tok(1), chooseBotCard(r.hands[room.players[0].id], r.receivedCardId).id);
+  }
+  const ticket = store.pendingBotTurn(room);
+  assert.ok(store.botPass(ticket));
+  assert.equal(store.botPass(ticket), null);
+});
+
+test('last human leaving deletes a room with bots', () => {
+  const store = new RoomStore();
+  const room = store.createRoom(tok(1), 'Solo');
+  store.startGame(tok(1));
+  assert.equal(store.leave(tok(1)), null);
+  assert.equal(store.rooms.has(room.code), false);
+});
+
+test('views mark bots and never include their hands mid-round', () => {
+  const store = new RoomStore();
+  const room = store.createRoom(tok(1), 'Solo');
+  store.startGame(tok(1));
+  const view = store.viewFor(room, room.players[0].id);
+  assert.equal(view.players.filter((p) => p.bot).length, 3);
+  assert.equal(view.round.revealedHands, null);
 });
