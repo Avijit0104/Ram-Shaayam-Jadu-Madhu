@@ -1,0 +1,12 @@
+{
+  "name": "RSJM — Ram Shaayam Jadu Madhu",
+  "short_name": "RSJM",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#14322a",
+  "theme_color": "#14322a",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

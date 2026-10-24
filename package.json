@@ -1,0 +1,19 @@
+{
+  "name": "rsjm",
+  "version": "1.0.0",
+  "description": "Ram-Shaayam-Jadu-Madhu: a 4-6 player card passing game played in the browser",
+  "main": "server.js",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "4.22.3",
+    "socket.io": "4.8.4"
+  }
+}
