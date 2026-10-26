@@ -28,6 +28,24 @@ function broadcast(room) {
     if (!p.bot) io.to(channel(p.token)).emit('state', store.viewFor(room, p.id));
   }
   scheduleTurn(room);
+  scheduleVote(room);
+}
+
+// One timer per room for the running reshuffle vote's deadline.
+const voteTimers = new Map(); // room code -> timeout
+
+function scheduleVote(room) {
+  clearTimeout(voteTimers.get(room.code));
+  voteTimers.delete(room.code);
+  const ticket = store.pendingVote(room);
+  if (!ticket) return;
+  const timer = setTimeout(() => {
+    voteTimers.delete(ticket.code);
+    const updated = store.expireVote(ticket);
+    if (updated) broadcast(updated);
+    else if (store.rooms.has(ticket.code)) scheduleVote(store.rooms.get(ticket.code));
+  }, Math.max(0, ticket.endsAt - Date.now()));
+  voteTimers.set(room.code, timer);
 }
 
 // One timer per room for the current turn: bots moving, people running out of time,
@@ -114,6 +132,8 @@ io.on('connection', (socket) => {
   on('game:pass', ({ cardId }) => broadcast(store.pass(token, cardId)));
   on('game:nextRound', () => broadcast(store.nextRound(token)));
   on('game:toLobby', () => broadcast(store.toLobby(token)));
+  on('vote:start', () => broadcast(store.requestReshuffle(token)));
+  on('vote:cast', ({ yes }) => broadcast(store.castVote(token, yes)));
 
   socket.on('disconnect', () => {
     const left = (socketCounts.get(token) || 1) - 1;

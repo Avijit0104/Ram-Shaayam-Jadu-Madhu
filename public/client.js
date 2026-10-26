@@ -126,6 +126,7 @@
       yourTurn: (t) => { tone(t, 660, 0.15, 'triangle', 0.2); tone(t + 0.12, 990, 0.25, 'triangle', 0.2); },
       tick: (t) => tone(t, 1250, 0.05, 'square', 0.05),
       timeout: (t) => tone(t, 220, 0.3, 'sawtooth', 0.08),
+      alert: (t) => [880, 660, 880].forEach((f, i) => tone(t + i * 0.13, f, 0.12, 'square', 0.07)),
       win: (t) => [523, 659, 784, 1047].forEach((f, i) => tone(t + i * 0.12, f, 0.35, 'triangle', 0.2)),
       lose: (t) => [392, 330, 262].forEach((f, i) => tone(t + i * 0.16, f, 0.3, 'sine', 0.15)),
     };
@@ -212,6 +213,23 @@
     }
 
     const pr = prev.round;
+
+    const v = next.vote;
+    if (v && (!prev.vote || prev.vote.id !== v.id)) {
+      sound.play('alert');
+      if (v.canVote && navigator.vibrate) navigator.vibrate([80, 60, 80]);
+    }
+    const result = next.voteResult;
+    if (result && (!prev.voteResult || prev.voteResult.id !== result.id)) {
+      if (result.passed) {
+        sound.play('deal');
+        toast('🔀 Vote passed! Everyone gets fresh cards.');
+        app.querySelectorAll('.hand .card').forEach((c) => c.classList.add('arrive'));
+      } else {
+        toast('Vote failed. Playing on.');
+      }
+    }
+
     if (r.passCount > pr.passCount && r.lastPass) {
       animatePass(r.lastPass.from, r.lastPass.to);
       if (r.lastPass.auto && r.lastPass.from === me) {
@@ -244,6 +262,16 @@
   }
 
   function updateTimer() {
+    const v = state && state.vote;
+    const voteBar = document.getElementById('vote-bar');
+    if (v && voteBar) {
+      const left = Math.max(0, v.endsAt - serverNow());
+      voteBar.style.width = `${(left / Math.max(1, v.endsAt - v.startedAt)) * 100}%`;
+      voteBar.classList.toggle('low', left <= 5000);
+      const vs = document.getElementById('vote-secs');
+      if (vs) vs.textContent = ` · ${Math.ceil(left / 1000)}s`;
+    }
+
     const bar = document.getElementById('timer-bar');
     const secs = document.getElementById('timer-secs');
     const r = state && state.round;
@@ -360,6 +388,8 @@
             <li>On your turn, pass one card to the next player. You have 30 seconds, or a card is passed for you.</li>
             <li>You can't pass the card you just received. You can pass it on a later turn.</li>
             <li>First to hold 4 cards of the same name wins the round.</li>
+            <li>Game stuck? After 15 passes anyone can ask to reshuffle all cards; everyone must agree.</li>
+            <li>If someone keeps blocking (holding one of each name and passing on what they get), a vote starts automatically. Majority wins, and the blocker can't vote.</li>
             <li>Joined late? Watch the round, then take a bot's seat in the next one.</li>
           </ol>
         </details>
@@ -532,8 +562,39 @@
       lastPass = r.lastPass.auto
         ? `⏱ Time's up for ${r.lastPass.from === me ? 'you' : from}. A card was passed to ${to}.`
         : `${from} passed a card to ${to}`;
+    } else if (r.reshuffles) {
+      lastPass = `🔀 Cards were reshuffled. ${r.turnPlayerId === me ? 'You go' : esc(playerName(r.turnPlayerId)) + ' goes'} first.`;
     } else {
       lastPass = `${r.starterId === me ? 'You start' : esc(playerName(r.starterId)) + ' starts'} this round`;
+    }
+
+    // Reshuffle vote: a banner while one runs, otherwise a button once it's allowed.
+    let voteHtml = '';
+    const v = state.vote;
+    if (v && !r.winner) {
+      const title = v.kind === 'blocking'
+        ? '🧱 Someone is blocking the game'
+        : `🔀 ${v.startedBy === me ? 'You asked' : esc(playerName(v.startedBy)) + ' wants'} to reshuffle`;
+      const rule = v.kind === 'blocking' ? 'Reshuffle all cards? Majority wins.' : 'Reshuffle all cards? Everyone must agree.';
+      let action;
+      if (v.canVote) {
+        action = `<div class="row">
+          <button id="vote-yes" class="primary grow">✅ Yes</button>
+          <button id="vote-no" class="grow">❌ No</button>
+        </div>`;
+      } else if (v.yourVote !== null) {
+        action = `<div class="muted small">You voted ${v.yourVote ? 'Yes' : 'No'}</div>`;
+      } else {
+        action = `<div class="muted small">${watching ? "Watchers don't vote." : "You can't vote on this one."}</div>`;
+      }
+      voteHtml = `<div class="panel vote stack">
+        <div class="vote-title">${title}</div>
+        <div class="muted small">${rule} ✅ ${v.yes} · ❌ ${v.no} of ${v.total}<span id="vote-secs" class="secs"></span></div>
+        <div class="timer"><div id="vote-bar" class="timer-bar"></div></div>
+        ${action}
+      </div>`;
+    } else if (state.canRequestVote && !r.winner) {
+      voteHtml = '<button id="vote-start" class="ghost tiny block vote-start">🔀 Game stuck? Vote to reshuffle</button>';
     }
 
     const seats = order.map((id, i) => {
@@ -594,6 +655,7 @@
       ${watchersLine}
       ${status}
       <div class="lastpass">${lastPass}</div>
+      ${voteHtml}
       ${handSection}
       ${myTurn && !r.winner ? `<div class="actionbar"><div>
         <button id="pass" class="primary block" ${selected ? '' : 'disabled'}>${passLabel}</button>
@@ -620,6 +682,12 @@
     }
     const lobbyBtn = document.getElementById('tolobby');
     if (lobbyBtn) lobbyBtn.onclick = () => send('game:toLobby');
+    const voteStart = document.getElementById('vote-start');
+    if (voteStart) voteStart.onclick = () => send('vote:start');
+    const voteYes = document.getElementById('vote-yes');
+    if (voteYes) voteYes.onclick = () => send('vote:cast', { yes: true });
+    const voteNo = document.getElementById('vote-no');
+    if (voteNo) voteNo.onclick = () => send('vote:cast', { yes: false });
     bindMute();
     bindRoundOver();
     updateTimer();
@@ -685,6 +753,9 @@
     if (view) clockOffset = view.serverNow - Date.now();
     const prevDue = prev && prev.round && prev.round.turnDueAt;
     if (!view || !view.round || view.round.turnDueAt !== prevDue) lastTickSecond = null;
+    if (prev && prev.round && view && view.round && view.round.reshuffles !== prev.round.reshuffles) {
+      selectedCardId = null; // a fresh hand
+    }
     if (!view) homeNotice = notice || null;
     if (view && view.code && location.search) history.replaceState(null, '', location.pathname);
     // Only rebuild the home screen when arriving there, so typed text survives reconnects.

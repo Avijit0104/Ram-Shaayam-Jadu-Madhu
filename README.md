@@ -24,6 +24,8 @@ Friends who arrive after the game has started can still join with the same code.
 - **Dealing:** every player gets 4 random cards. You see only your own cards.
 - **Passing:** on your turn, give one card to the next player. You **can't pass the card you just received** (it shows a 🔒). You can pass it on a later turn.
 - **Turn timer:** you have **30 seconds** per turn. If time runs out, a card is passed for you. If a player goes offline on their turn, they're skipped after 10 seconds so the game doesn't get stuck.
+- **Stuck game? Vote to reshuffle:** once 15 cards have been passed since the deal, anyone can tap **🔀 Vote to reshuffle**. If **everyone** agrees, all cards are collected and dealt again. The round and scores carry on.
+- **Blocking:** a player who holds one of each name and keeps passing on the name they just received can stop anyone from winning. If someone does this 4 turns in a row (after 15 passes), everyone sees **"🧱 Someone is blocking the game"** and a vote starts automatically. A **majority** decides, and the blocker can't vote. Votes last 20 seconds.
 - **Winning:** the first player to hold **4 cards with the same name** wins the round and gets ★ 1 point. Then everyone's cards are shown, and the next round starts with the next player.
 
 ## Features

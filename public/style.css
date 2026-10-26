@@ -227,6 +227,12 @@ label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 
 .timer-bar.low, .status.mine .timer-bar.low { background: var(--danger); }
 
 .watchers { margin-top: 6px; }
+
+/* Reshuffle vote */
+.vote { margin-top: 12px; border-color: rgba(251, 191, 36, 0.55); background: rgba(251, 191, 36, 0.1); }
+.vote-title { font-weight: 700; }
+.vote .timer { margin-top: 0; }
+.vote-start { margin-top: 10px; }
 .watching { margin-top: 18px; }
 .watching-icon { font-size: 2rem; }
 

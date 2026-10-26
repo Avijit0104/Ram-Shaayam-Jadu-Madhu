@@ -66,9 +66,25 @@ function dealRound(playerIds, names, starterIndex = 0, rng = Math.random) {
     turnIndex: starterIndex,
     receivedCardId: null, // card the current player just got and may not pass on
     lastPass: null,
-    passCount: 0,
+    passCount: 0, // total passes this round; never reset, so it identifies a turn
+    passesSinceDeal: 0, // passes since the last deal or reshuffle
+    reshuffles: 0,
+    blockStreak: {}, // playerId -> consecutive blocking passes (see passCard)
     winner: null,
   };
+}
+
+// Collects every card and deals again within the same round. The player whose turn
+// it is keeps the turn and passes from a fresh 4-card hand.
+function reshuffle(round, rng = Math.random) {
+  const fresh = dealRound(round.order, round.names, round.turnIndex, rng);
+  round.hands = fresh.hands;
+  round.receivedCardId = null;
+  round.lastPass = null;
+  round.passesSinceDeal = 0;
+  round.blockStreak = {};
+  round.reshuffles++;
+  return round;
 }
 
 function currentPlayerId(round) {
@@ -87,13 +103,23 @@ function passCard(round, playerId, cardId) {
     throw new GameError("You can't pass the card you just received");
   }
 
+  const received = hand.find((c) => c.id === round.receivedCardId);
   const [card] = hand.splice(idx, 1);
+
+  // Blocking: passing on the same name you just received while keeping a full hand
+  // of all-different names. Holding one of each name forever means nobody else can
+  // ever collect 4 of those names.
+  const allDifferent = new Set(hand.map((c) => c.name)).size === hand.length;
+  const blocking = !!received && card.name === received.name && allDifferent && hand.length >= HAND_SIZE;
+  round.blockStreak[playerId] = blocking ? (round.blockStreak[playerId] || 0) + 1 : 0;
+
   const nextIndex = (round.turnIndex + 1) % round.order.length;
   const receiverId = round.order[nextIndex];
   round.hands[receiverId].push(card);
   round.receivedCardId = card.id;
   round.turnIndex = nextIndex;
   round.passCount++;
+  round.passesSinceDeal++;
   round.lastPass = { from: playerId, to: receiverId };
 
   const setName = completedSet(round.hands[receiverId]);
@@ -115,4 +141,5 @@ module.exports = {
   dealRound,
   currentPlayerId,
   passCard,
+  reshuffle,
 };

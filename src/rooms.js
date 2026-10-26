@@ -17,6 +17,7 @@ const {
   dealRound,
   currentPlayerId,
   passCard,
+  reshuffle,
 } = require('./game');
 const { BOT_NAMES, chooseBotCard } = require('./bots');
 
@@ -32,6 +33,14 @@ const TURN_MS = 30 * 1000; // a human's time to pick a card
 const OFFLINE_GRACE_MS = 10 * 1000; // how long to wait for an offline player to come back
 const BOT_MIN_MS = 1200; // bots pause so people can follow the cards
 const BOT_JITTER_MS = 800;
+
+// Reshuffle votes. Anyone seated can ask after MIN_PASSES_FOR_VOTE passes (everyone
+// must agree). A player who blocks for BLOCK_STREAK turns in a row triggers a vote
+// automatically (majority, and the blocker can't vote).
+const MIN_PASSES_FOR_VOTE = 15;
+const BLOCK_STREAK = 4;
+const VOTE_MS = 20 * 1000;
+const VOTE_COOLDOWN_PASSES = 8; // after a failed vote
 
 function cleanName(raw, max, label) {
   const name = String(raw ?? '').replace(/\s+/g, ' ').trim();
@@ -133,6 +142,7 @@ class RoomStore {
   returnToLobby(room) {
     room.phase = 'lobby';
     room.round = null;
+    room.vote = null;
     room.players = this.humans(room);
     for (const p of room.players) p.spectator = false;
   }
@@ -156,6 +166,9 @@ class RoomStore {
       round: null,
       roundNumber: 0,
       nextStarterIndex: 0,
+      vote: null, // the reshuffle vote in progress, if any
+      voteSeq: 0,
+      voteResult: null, // { id, kind, passed } of the last finished vote
       notice: null,
       lastActivity: this.now(),
     };
@@ -300,6 +313,7 @@ class RoomStore {
     room.roundNumber++;
     room.phase = 'playing';
     room.notice = null;
+    room.vote = null;
     this.startTurn(room);
     this.touch(room);
   }
@@ -318,10 +332,123 @@ class RoomStore {
       const winner = room.players.find((p) => p.id === room.round.winner.playerId);
       if (winner) winner.score++;
       room.phase = 'roundOver';
+      room.vote = null;
     } else {
       this.startTurn(room);
+      const r = room.round;
+      if (!room.vote && r.blockStreak[playerId] >= BLOCK_STREAK && r.passesSinceDeal >= this.voteAllowedAt(r)) {
+        this.startVote(room, 'blocking', { blockerId: playerId });
+      }
     }
     this.touch(room);
+  }
+
+  // ---- reshuffle votes ----------------------------------------------------
+
+  voteAllowedAt(round) {
+    return Math.max(MIN_PASSES_FOR_VOTE, round.voteAllowedAt || 0);
+  }
+
+  // 'manual': someone asked; everyone seated votes and all must agree.
+  // 'blocking': triggered by a blocker; everyone else votes and a majority wins.
+  // Bots always vote yes; whoever asked for a manual vote has voted yes.
+  startVote(room, kind, { startedBy = null, blockerId = null } = {}) {
+    const eligible = this.seated(room).filter((p) => p.id !== blockerId);
+    const now = this.now();
+    room.vote = {
+      id: ++room.voteSeq,
+      kind,
+      startedBy,
+      blockerId,
+      eligible: eligible.map((p) => p.id),
+      votes: {}, // playerId -> true/false
+      startedAt: now,
+      endsAt: now + VOTE_MS,
+    };
+    for (const p of eligible) if (p.bot) room.vote.votes[p.id] = true;
+    if (startedBy) room.vote.votes[startedBy] = true;
+    this.settleVote(room, false);
+  }
+
+  requestReshuffle(token) {
+    const { room, player } = this.requireMembership(token);
+    if (room.phase !== 'playing') throw new GameError('No round in progress');
+    if (player.spectator) throw new GameError("You're watching this round");
+    if (room.vote) throw new GameError('A vote is already running');
+    const at = this.voteAllowedAt(room.round);
+    if (room.round.passesSinceDeal < at) {
+      throw new GameError(`You can ask for a reshuffle after ${at} passes`);
+    }
+    this.startVote(room, 'manual', { startedBy: player.id });
+    this.touch(room);
+    return room;
+  }
+
+  castVote(token, yes) {
+    const { room, player } = this.requireMembership(token);
+    const v = room.vote;
+    if (!v || room.phase !== 'playing') throw new GameError('No vote is running');
+    if (!v.eligible.includes(player.id)) throw new GameError("You can't vote on this one");
+    if (player.id in v.votes) throw new GameError('You already voted');
+    v.votes[player.id] = !!yes;
+    this.settleVote(room, false);
+    this.touch(room);
+    return room;
+  }
+
+  // Ends the vote if the result is decided. Missing votes only count once time is up:
+  // then they're Yes for a blocking vote (so a stuck table can move on), and for a
+  // manual vote only offline people count as Yes (everyone else must actually agree).
+  settleVote(room, expired) {
+    const v = room.vote;
+    if (!v) return;
+    let yes = 0;
+    let no = 0;
+    let pendingOnline = 0;
+    let pendingOffline = 0;
+    for (const id of v.eligible) {
+      if (v.votes[id] === true) yes++;
+      else if (v.votes[id] === false) no++;
+      else if ((room.players.find((p) => p.id === id) || {}).connected) pendingOnline++;
+      else pendingOffline++;
+    }
+    const total = v.eligible.length;
+    const pending = pendingOnline + pendingOffline;
+    let passed = null;
+    if (v.kind === 'manual') {
+      if (no > 0) passed = false;
+      else if (pending === 0) passed = true;
+      else if (expired) passed = pendingOnline === 0;
+    } else if (yes * 2 > total) passed = true;
+    else if ((yes + pending) * 2 <= total) passed = false;
+    else if (expired) passed = true; // pending votes count as yes, and that's a majority
+
+    if (passed === null) return;
+    room.vote = null;
+    room.voteResult = { id: v.id, kind: v.kind, passed };
+    const r = room.round;
+    if (passed) {
+      reshuffle(r, this.rng);
+      this.startTurn(room);
+    } else {
+      r.voteAllowedAt = r.passesSinceDeal + VOTE_COOLDOWN_PASSES;
+      if (v.blockerId) r.blockStreak[v.blockerId] = 0;
+    }
+  }
+
+  // A ticket for the running vote's deadline, or null.
+  pendingVote(room) {
+    if (!room || room.phase !== 'playing' || !room.vote) return null;
+    return { code: room.code, voteId: room.vote.id, endsAt: room.vote.endsAt };
+  }
+
+  expireVote(ticket) {
+    const room = this.rooms.get(ticket.code);
+    if (!room || !room.vote || room.vote.id !== ticket.voteId) return null;
+    if (this.now() < room.vote.endsAt) return null;
+    this.settleVote(room, true);
+    this.touch(room);
+    return room;
   }
 
   // ---- turn timing --------------------------------------------------------
@@ -353,6 +480,7 @@ class RoomStore {
       code: room.code,
       roundNumber: room.roundNumber,
       passCount: room.round.passCount,
+      reshuffles: room.round.reshuffles,
       dueAt: this.turnDueAt(room),
     };
   }
@@ -362,7 +490,8 @@ class RoomStore {
   autoPass(ticket) {
     const room = this.rooms.get(ticket.code);
     const now = this.pendingTurn(room);
-    if (!now || now.roundNumber !== ticket.roundNumber || now.passCount !== ticket.passCount) {
+    if (!now || now.roundNumber !== ticket.roundNumber || now.passCount !== ticket.passCount
+      || now.reshuffles !== ticket.reshuffles) {
       return null;
     }
     if (this.now() < now.dueAt) return null; // e.g. the player came back online
@@ -447,6 +576,30 @@ class RoomStore {
         passCount: round.passCount,
         winner: round.winner,
         revealedHands: room.phase === 'roundOver' ? round.hands : null,
+        passesSinceDeal: round.passesSinceDeal,
+        reshuffles: round.reshuffles,
+        voteAt: this.voteAllowedAt(round),
+      };
+    }
+    view.voteResult = room.voteResult;
+    view.canRequestVote = !!(room.phase === 'playing' && !room.vote && me && !me.spectator
+      && round.passesSinceDeal >= this.voteAllowedAt(round));
+    view.vote = null;
+    const v = room.vote;
+    if (v && room.phase === 'playing') {
+      // Never reveals who the blocker is.
+      const cast = Object.values(v.votes);
+      view.vote = {
+        id: v.id,
+        kind: v.kind,
+        startedBy: v.startedBy,
+        startedAt: v.startedAt,
+        endsAt: v.endsAt,
+        total: v.eligible.length,
+        yes: cast.filter((x) => x).length,
+        no: cast.filter((x) => !x).length,
+        canVote: v.eligible.includes(playerId) && !(playerId in v.votes),
+        yourVote: playerId in v.votes ? v.votes[playerId] : null,
       };
     }
     return view;
@@ -461,4 +614,8 @@ module.exports = {
   OFFLINE_GRACE_MS,
   BOT_MIN_MS,
   BOT_JITTER_MS,
+  MIN_PASSES_FOR_VOTE,
+  BLOCK_STREAK,
+  VOTE_MS,
+  VOTE_COOLDOWN_PASSES,
 };
