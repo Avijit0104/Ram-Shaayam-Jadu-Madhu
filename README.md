@@ -34,7 +34,8 @@ Friends who arrive after the game has started can still join with the same code.
 - Each player's phone shows only their own cards. The server never sends anyone else's cards until the round ends.
 - If your phone sleeps or you switch apps, you get your seat back automatically.
 - Your phone vibrates when it's your turn, and the screen stays on during a game.
-- Cards fly between seats, and there are sounds for passing, your turn, the last 5 seconds, and winning or losing. Use the 🔊 button to mute.
+- A felt card table: players sit around the table, your cards fan out in your hand, and each name has its own card art (🏹 Ram, 🦚 Shaayam, 🔮 Jadu, 🍯 Madhu).
+- Cards fly between seats, a ring around the current player's picture counts down their time, and the winner gets a trophy and confetti. There are sounds for passing, your turn, the last 5 seconds, and winning or losing. Use the 🔊 button to mute.
 - Bots fill empty seats so you can play even when your friends aren't online.
 - Late arrivals watch the round in progress and take a bot's seat in the next one.
 - Scores are kept across rounds, and the host can remove players who left.

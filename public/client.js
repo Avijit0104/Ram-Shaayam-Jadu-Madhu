@@ -207,6 +207,7 @@
     if (!sameRound) {
       if (prev) { // a fresh deal, not a page load or reconnect
         sound.play('deal');
+        app.querySelectorAll('.hand .card').forEach((c) => c.classList.add('deal'));
         if (r.turnPlayerId === me) setTimeout(() => sound.play('yourTurn'), 450);
       }
       return;
@@ -224,7 +225,7 @@
       if (result.passed) {
         sound.play('deal');
         toast('🔀 Vote passed! Everyone gets fresh cards.');
-        app.querySelectorAll('.hand .card').forEach((c) => c.classList.add('arrive'));
+        app.querySelectorAll('.hand .card').forEach((c) => c.classList.add('deal'));
       } else {
         toast('Vote failed. Playing on.');
       }
@@ -281,6 +282,11 @@
     const s = Math.ceil(left / 1000);
     bar.style.width = `${(left / total) * 100}%`;
     bar.classList.toggle('low', left <= 10000);
+    const ring = app.querySelector('.seat.turn .seat-ring');
+    if (ring) {
+      ring.style.setProperty('--p', (left / total).toFixed(3));
+      ring.classList.toggle('low', left <= 10000);
+    }
     if (secs) secs.textContent = `${s}s`;
     if (r.turnPlayerId === state.youId && s <= 5 && s > 0 && s !== lastTickSecond) {
       lastTickSecond = s;
@@ -306,28 +312,54 @@
     return state && state.hostId === state.youId;
   }
 
+  // One icon per card name, by position: Ram, Shaayam, Jadu, Madhu, then host-chosen names.
+  const ICONS = ['🏹', '🦚', '🔮', '🍯', '⭐', '🌙'];
+  const BASE = ['Ram', 'Shaayam', 'Jadu', 'Madhu'];
+
+  // A playing-card face. `k` is the name's index (colour + icon).
+  function faceHtml(name, k, extra) {
+    const letter = esc(name.charAt(0).toUpperCase());
+    const icon = ICONS[k] || '✦';
+    return `
+      <span class="card-corner tl"><b>${letter}</b><i>${icon}</i></span>
+      <span class="card-medal"><span class="card-icon">${icon}</span></span>
+      <span class="card-name">${esc(name)}</span>
+      ${extra || ''}`;
+  }
+
   function cardHtml(card, opts) {
     const o = opts || {};
-    const i = nameIndex(card.name);
-    const cls = ['card', 'n' + i];
-    if (o.mini) cls.push('mini');
+    const k = nameIndex(card.name);
+    if (o.mini) {
+      return `<div class="card mini n${k}"><i>${ICONS[k] || '✦'}</i><span>${esc(card.name)}</span></div>`;
+    }
+    const cls = ['card', 'n' + k];
     if (o.selected) cls.push('selected');
     if (o.locked) cls.push('locked');
-    const tag = o.button ? 'button' : 'div';
-    const attrs = o.button
-      ? ` type="button" data-card="${esc(card.id)}"${o.disabled ? ' disabled' : ''} aria-pressed="${o.selected ? 'true' : 'false'}"`
-      : '';
-    if (o.mini) return `<div class="${cls.join(' ')}"><span class="label">${esc(card.name)}</span></div>`;
-    return `<${tag} class="${cls.join(' ')}"${attrs}>
-      <span class="corner">${esc(card.name.charAt(0).toUpperCase())}</span>
-      <span class="big">${esc(card.name.charAt(0).toUpperCase())}</span>
-      <span class="label">${esc(card.name)}</span>
-      ${o.locked ? '<span class="lock">🔒 Just received</span>' : ''}
-    </${tag}>`;
+    const lock = o.locked ? '<span class="card-lock" title="You just got this card, so you can\'t pass it this turn">🔒</span>' : '';
+    return `<button type="button" class="${cls.join(' ')}" data-card="${esc(card.id)}" style="--i:${o.i || 0}"
+      ${o.disabled ? 'disabled' : ''} aria-pressed="${o.selected ? 'true' : 'false'}" aria-label="${esc(card.name)}">
+      ${faceHtml(card.name, k, lock)}
+    </button>`;
   }
 
   function nameChips(names) {
-    return names.map((n, i) => `<span class="chip n${i}">${esc(n)}</span>`).join(' ');
+    return names.map((n, i) => `<span class="chip n${i}"><i>${ICONS[i] || '✦'}</i>${esc(n)}</span>`).join('');
+  }
+
+  function hashHue(s) {
+    let h = 0;
+    for (const ch of String(s)) h = (h * 31 + ch.codePointAt(0)) >>> 0;
+    return h % 360;
+  }
+
+  function avatarHtml(p, cls) {
+    const face = p.bot ? '🤖' : esc(String(p.name).trim().charAt(0).toUpperCase() || '?');
+    return `<span class="avatar${p.bot ? ' bot' : ''}${cls ? ' ' + cls : ''}" style="--hue:${hashHue(p.name)}">${face}</span>`;
+  }
+
+  function logo(small) {
+    return `<span class="logo${small ? ' small' : ''}">RSJM</span>`;
   }
 
   // Keep focus + typed text in inputs across re-renders.
@@ -360,10 +392,12 @@
   function renderHome() {
     const savedName = storageGet('rsjm-name') || '';
     app.innerHTML = `
-      <div class="brand">
-        <h1>RSJM</h1>
-        <p>Ram · Shaayam · Jadu · Madhu</p>
-        <div class="names">${nameChips(['Ram', 'Shaayam', 'Jadu', 'Madhu'])}</div>
+      <div class="hero">
+        <div class="hero-fan" aria-hidden="true">
+          ${BASE.map((n, k) => `<div class="card hero-card n${k}" style="--i:${k}">${faceHtml(n, k)}</div>`).join('')}
+        </div>
+        <h1>${logo()}</h1>
+        <p class="tagline">Ram · Shaayam · Jadu · Madhu</p>
       </div>
       <div class="stack">
         ${homeNotice ? `<div class="notice">${esc(homeNotice)}</div>` : ''}
@@ -372,15 +406,15 @@
             <label for="name">Your name</label>
             <input id="name" maxlength="16" autocomplete="nickname" placeholder="e.g. Avijit" value="${esc(savedName)}" />
           </div>
-          <button id="create" class="primary block">Create a new room</button>
+          <button id="create" class="primary block">✨ Create a new room</button>
           <div class="divider">or join friends</div>
           <div class="row">
             <input id="code" class="code grow" maxlength="4" placeholder="CODE" autocapitalize="characters" autocomplete="off" value="${esc(urlRoom || '')}" />
-            <button id="join">Join</button>
+            <button id="join" class="secondary">Join</button>
           </div>
         </div>
         <details class="panel rules">
-          <summary>How to play</summary>
+          <summary>📜 How to play</summary>
           <ol>
             <li>1 to 6 players. If fewer than 4 people join, bots fill the empty seats.</li>
             <li>Each player gets 4 cards. There are 4 cards of each name: Ram, Shaayam, Jadu, Madhu (the host adds one more name for each player beyond 4).</li>
@@ -424,6 +458,7 @@
   }
 
   let extraNamesTimer = null;
+  let knownLobbyPlayers = new Set(); // players already shown, so only newcomers pop in
 
   function renderLobby() {
     const n = state.players.length;
@@ -436,7 +471,7 @@
       const v = state.extraNames[i] || '';
       extraInputs += `
         <div>
-          <label for="extra${i}">Card name ${names.length + i + 1}</label>
+          <label for="extra${i}">${ICONS[names.length + i]} Card name ${names.length + i + 1}</label>
           <input id="extra${i}" data-extra="${i}" maxlength="12" placeholder="${host ? 'Type a name…' : 'Host is choosing…'}" value="${esc(v)}" ${host ? '' : 'readonly'} />
         </div>`;
     }
@@ -448,46 +483,53 @@
       startHint = host ? `Choose ${needed} extra card name${needed > 1 ? 's' : ''} above` : 'Host is choosing extra card names…';
     }
     const startLabel = bots
-      ? `Start with ${botWord}`
-      : (state.roundNumber ? 'Start next game' : 'Start game');
+      ? `▶ Start with ${botWord}`
+      : (state.roundNumber ? '▶ Start next game' : '▶ Start game');
+
+    const playerRows = state.players.map((p) => `
+      <li class="${knownLobbyPlayers.has(p.id) ? '' : 'pop'}">
+        ${avatarHtml(p)}
+        <span class="name">${esc(p.name)}${p.id === state.youId ? ' <span class="muted">(you)</span>' : ''}</span>
+        <span class="dot ${p.connected ? '' : 'off'}" title="${p.connected ? 'online' : 'offline'}"></span>
+        ${p.id === state.hostId ? '<span class="tag host">👑 host</span>' : ''}
+        ${state.roundNumber ? `<span class="tag">★ ${p.score}</span>` : ''}
+        ${host && p.id !== state.youId ? `<button class="danger tiny" data-kick="${esc(p.id)}" aria-label="Remove ${esc(p.name)}">✕</button>` : ''}
+      </li>`).join('');
+    const botRows = Array.from({ length: bots }, () => `
+      <li class="empty-seat">
+        <span class="avatar empty">🤖</span>
+        <span class="name muted">Empty seat · a bot will play</span>
+      </li>`).join('');
 
     app.innerHTML = `
       <div class="stack">
-        <div class="topbar"><h2>RSJM</h2><div class="row">${muteButton()}<button id="leave" class="ghost tiny">Leave</button></div></div>
+        <div class="topbar">${logo(true)}<div class="row">${muteButton()}<button id="leave" class="ghost tiny">Leave</button></div></div>
         ${state.notice ? `<div class="notice">${esc(state.notice)}</div>` : ''}
-        <div class="panel center stack">
-          <div class="muted small">Room code</div>
-          <div class="room-code">${esc(state.code)}</div>
-          <button id="share" class="block">Share invite link</button>
+        <div class="panel ticket center stack">
+          <div class="muted small caps">Room code</div>
+          <div class="code-tiles room-code" aria-label="Room code ${esc(state.code)}">${state.code.split('').map((ch, i) => `<span style="--i:${i}">${esc(ch)}</span>`).join('')}</div>
+          <button id="share" class="secondary block">📤 Share invite link</button>
         </div>
         <div class="panel">
-          <div class="row" style="justify-content:space-between;margin-bottom:6px">
-            <h3>Players</h3><span class="muted small">${n} / ${state.maxPlayers}</span>
+          <div class="row" style="justify-content:space-between;margin-bottom:4px">
+            <h3>Players</h3><span class="pill">${n} / ${state.maxPlayers}</span>
           </div>
-          <ul class="player-list">
-            ${state.players.map((p) => `
-              <li>
-                <span class="dot ${p.connected ? '' : 'off'}" title="${p.connected ? 'online' : 'offline'}"></span>
-                <span class="name">${esc(p.name)}${p.id === state.youId ? ' <span class="muted">(you)</span>' : ''}</span>
-                ${p.id === state.hostId ? '<span class="tag host">host</span>' : ''}
-                ${state.roundNumber ? `<span class="tag">★ ${p.score}</span>` : ''}
-                ${host && p.id !== state.youId ? `<button class="danger tiny" data-kick="${esc(p.id)}">Remove</button>` : ''}
-              </li>`).join('')}
-          </ul>
-          ${bots ? `<p class="muted small" style="margin:10px 0 0">🤖 ${botWord} will fill the empty seat${bots > 1 ? 's' : ''}. Wait for friends or start now.</p>` : ''}
+          <ul class="player-list">${playerRows}${botRows}</ul>
+          ${bots ? `<p class="muted small" style="margin:10px 0 0">Wait for friends, or start now and bots take the empty seats.</p>` : ''}
         </div>
         <div class="panel stack">
           <h3>Cards in play</h3>
-          <div>${nameChips(names)}</div>
+          <div class="chips">${nameChips(names)}</div>
           ${needed ? `<p class="muted small" style="margin:0">${n} players, so ${needed} more name${needed > 1 ? 's are' : ' is'} needed. 4 cards of each name are added.</p>${extraInputs}` : `<p class="muted small" style="margin:0">With 5 or 6 players, the host adds a new card name for each extra player.</p>`}
         </div>
       </div>
       <div class="actionbar"><div>
         ${host
-          ? `<button id="start" class="primary block" ${startHint ? 'disabled' : ''}>${startLabel}</button>`
-          : `<div class="status">Waiting for the host to start…</div>`}
+          ? `<button id="start" class="primary block big" ${startHint ? 'disabled' : ''}>${startLabel}</button>`
+          : `<div class="status waiting">Waiting for the host to start<span class="dots"><i></i><i></i><i></i></span></div>`}
         ${startHint ? `<div class="center muted small" style="margin-top:6px">${esc(startHint)}</div>` : ''}
       </div></div>`;
+    knownLobbyPlayers = new Set(state.players.map((p) => p.id));
 
     document.getElementById('leave').onclick = () => send('room:leave');
     document.getElementById('share').onclick = shareInvite;
@@ -527,6 +569,41 @@
     }
   }
 
+  // Seats sit around an oval table. You're at the bottom; cards travel clockwise
+  // (bottom → left → top → right), which is the passing order.
+  function tableHtml(r, me) {
+    const order = r.order;
+    const n = order.length;
+    const myIndex = Math.max(0, order.indexOf(me));
+    const seats = order.map((id, idx) => {
+      const p = player(id) || { name: '?', connected: false, score: 0, cardCount: 0 };
+      const k = (idx - myIndex + n) % n;
+      const a = (Math.PI / 2) + (k * 2 * Math.PI) / n;
+      const x = 50 + 37 * Math.cos(a);
+      const y = 50 + 37 * Math.sin(a);
+      const cls = ['seat'];
+      if (id === r.turnPlayerId) cls.push('turn');
+      if (id === me) cls.push('you');
+      if (!p.connected) cls.push('offline');
+      if (r.winner && r.winner.playerId === id) cls.push('winner');
+      return `<div class="${cls.join(' ')}" data-seat="${esc(id)}" style="left:${x.toFixed(2)}%;top:${y.toFixed(2)}%">
+        <div class="seat-ring">${avatarHtml(p)}</div>
+        <div class="seat-name">${id === me ? 'You' : esc(p.name)}</div>
+        <div class="seat-meta"><span class="mbacks">${'<i></i>'.repeat(p.cardCount)}</span><span>★${p.score}</span></div>
+      </div>`;
+    }).join('');
+    return `<div class="table">
+      <div class="felt">
+        <div class="felt-center">
+          <div class="dir" aria-hidden="true">↻</div>
+          <div class="felt-round">Round ${state.roundNumber}</div>
+          <div class="felt-sub">${r.passCount} pass${r.passCount === 1 ? '' : 'es'}${r.reshuffles ? ` · 🔀${r.reshuffles}` : ''}</div>
+        </div>
+      </div>
+      ${seats}
+    </div>`;
+  }
+
   function renderGame() {
     const r = state.round;
     const me = state.youId;
@@ -548,11 +625,11 @@
 
     let status;
     if (r.winner) status = '<div class="status">Round over</div>';
-    else if (myTurn) status = `<div class="status mine">Your turn: pass a card to ${esc(playerName(myNextId))}${secs}${timer}</div>`;
+    else if (myTurn) status = `<div class="status mine">✨ Your turn: pass a card to ${esc(playerName(myNextId))}${secs}${timer}</div>`;
     else if (showTimer && !turnPlayer.connected) {
-      status = `<div class="status">${esc(playerName(r.turnPlayerId))} is offline. Passing for them in${secs}${timer}</div>`;
+      status = `<div class="status">📵 ${esc(playerName(r.turnPlayerId))} is offline. Passing for them in${secs}${timer}</div>`;
     } else {
-      status = `<div class="status">${esc(playerName(r.turnPlayerId))} is passing a card to ${esc(playerName(after(r.turnPlayerId)))}…${secs}${timer}</div>`;
+      status = `<div class="status">${esc(playerName(r.turnPlayerId))} is passing a card to ${esc(playerName(after(r.turnPlayerId)))}<span class="dots"><i></i><i></i><i></i></span>${secs}${timer}</div>`;
     }
 
     let lastPass = '';
@@ -580,7 +657,7 @@
       if (v.canVote) {
         action = `<div class="row">
           <button id="vote-yes" class="primary grow">✅ Yes</button>
-          <button id="vote-no" class="grow">❌ No</button>
+          <button id="vote-no" class="secondary grow">❌ No</button>
         </div>`;
       } else if (v.yourVote !== null) {
         action = `<div class="muted small">You voted ${v.yourVote ? 'Yes' : 'No'}</div>`;
@@ -597,20 +674,6 @@
       voteHtml = '<button id="vote-start" class="ghost tiny block vote-start">🔀 Game stuck? Vote to reshuffle</button>';
     }
 
-    const seats = order.map((id, i) => {
-      const p = player(id) || { name: '?', connected: false, score: 0, cardCount: 0 };
-      const cls = ['seat'];
-      if (id === r.turnPlayerId) cls.push('turn');
-      if (id === me) cls.push('you');
-      if (!p.connected) cls.push('offline');
-      return `<div class="${cls.join(' ')}" data-seat="${esc(id)}">
-        <div class="seat-order">${i + 1}</div>
-        <div class="seat-name">${esc(playerName(id))}</div>
-        <div class="backs">${'<span class="back"></span>'.repeat(p.cardCount)}</div>
-        <div class="seat-meta">★ ${p.score}${p.connected ? '' : ' · offline'}</div>
-      </div>`;
-    }).join('');
-
     const watchers = state.players.filter((p) => p.spectator);
     const watchersLine = watchers.length
       ? `<div class="muted small center watchers">👀 Watching: ${watchers.map((p) => esc(p.name) + (p.id === me ? ' (you)' : '')).join(', ')}</div>`
@@ -618,8 +681,13 @@
 
     const selected = hand.find((c) => c.id === selectedCardId);
     const passLabel = selected
-      ? `Pass ${esc(selected.name)} to ${esc(playerName(myNextId))}`
+      ? `Pass ${ICONS[nameIndex(selected.name)] || ''} ${esc(selected.name)} to ${esc(playerName(myNextId))} ➜`
       : 'Tap a card to select it';
+
+    // Fan the hand: cards overlap just enough to fit the screen width.
+    const avail = Math.min(window.innerWidth || 390, 560) - 40;
+    const cw = Math.min(108, Math.max(78, avail * 0.29));
+    const overlap = hand.length > 1 ? Math.max(0, (hand.length * cw - avail) / (hand.length - 1)) : 0;
 
     const handSection = watching
       ? `<div class="panel center stack watching">
@@ -629,10 +697,10 @@
             ? "You'll take a bot's seat when the next round starts."
             : "All seats are taken. You'll get one when the host goes back to the lobby."}</div>
         </div>`
-      : `<div class="hand-title"><h3>Your cards</h3><span class="muted small">${nameChips(r.names)}</span></div>
-        <div class="hand">
-          ${hand.map((c) => cardHtml(c, {
-            button: true,
+      : `<div class="hand-title"><h3>Your hand</h3><div class="chips small">${nameChips(r.names)}</div></div>
+        <div class="hand" style="--cw:${cw.toFixed(0)}px;--ov:${overlap.toFixed(0)}px;--n:${hand.length}">
+          ${hand.map((c, i) => cardHtml(c, {
+            i,
             selected: c.id === selectedCardId,
             locked: c.id === r.lockedCardId,
             disabled: !myTurn || c.id === r.lockedCardId || !!r.winner,
@@ -645,20 +713,19 @@
 
     app.innerHTML = `
       <div class="topbar">
-        <h2>RSJM</h2>
-        <div class="row"><span class="muted small">Room ${esc(state.code)} · Round ${state.roundNumber}</span>
+        ${logo(true)}
+        <div class="row"><span class="pill">Room ${esc(state.code)}</span>
         ${muteButton()}
         ${isHost() ? '<button id="tolobby" class="ghost tiny">Lobby</button>' : ''}</div>
       </div>
-      <div class="seats">${seats}</div>
-      <div class="muted small center" style="margin-top:6px">Cards go 1 → 2 → 3 … → 1</div>
+      ${tableHtml(r, me)}
       ${watchersLine}
       ${status}
       <div class="lastpass">${lastPass}</div>
       ${voteHtml}
       ${handSection}
       ${myTurn && !r.winner ? `<div class="actionbar"><div>
-        <button id="pass" class="primary block" ${selected ? '' : 'disabled'}>${passLabel}</button>
+        <button id="pass" class="primary block big" ${selected ? '' : 'disabled'}>${passLabel}</button>
       </div></div>` : ''}
       ${r.winner ? renderRoundOver(overlayEnter) : ''}`;
 
@@ -702,14 +769,18 @@
     const w = r.winner;
     const youWon = w.playerId === state.youId;
     const ranked = state.players.filter((p) => !p.spectator).sort((a, b) => b.score - a.score);
+    const medals = ['🥇', '🥈', '🥉'];
+    const winner = player(w.playerId) || { name: '?' };
     return `
-      <div class="overlay${enter ? ' enter' : ''}"><div class="panel stack">
-        <div class="win-title">${youWon ? '🎉 <span class="who">You win!</span>' : `🎉 <span class="who">${esc(playerName(w.playerId))}</span> wins!`}</div>
-        <div class="center muted">4 × <span class="chip n${nameIndex(w.name)}">${esc(w.name)}</span></div>
+      <div class="overlay${enter ? ' enter' : ''}"><div class="panel result stack">
+        <div class="burst" aria-hidden="true"></div>
+        <div class="trophy">${youWon ? '🏆' : avatarHtml(winner, 'big')}</div>
+        <div class="win-title">${youWon ? '<span class="who">You win!</span>' : `<span class="who">${esc(winner.name)}</span> wins!`}</div>
+        <div class="win-set">${Array.from({ length: 4 }, (_, i) => `<div class="card mini n${nameIndex(w.name)}" style="--i:${i}"><i>${ICONS[nameIndex(w.name)] || '✦'}</i><span>${esc(w.name)}</span></div>`).join('')}</div>
         <div class="reveal">
           ${r.order.map((id) => `
             <div class="reveal-row ${id === w.playerId ? 'winner' : ''}">
-              <div class="who">${esc(playerName(id))}${id === state.youId ? ' (you)' : ''}</div>
+              <div class="who">${avatarHtml(player(id) || { name: '?' }, 'tiny')}${esc(playerName(id))}${id === state.youId ? ' (you)' : ''}</div>
               <div class="reveal-cards">
                 ${(r.revealedHands[id] || []).slice().sort((a, b) => nameIndex(a.name) - nameIndex(b.name))
                   .map((c) => cardHtml(c, { mini: true })).join('')}
@@ -717,13 +788,13 @@
             </div>`).join('')}
         </div>
         <table class="scores">
-          ${ranked.map((p) => `<tr><td>${esc(playerName(p.id))}</td><td>★ ${p.score}</td></tr>`).join('')}
+          ${ranked.map((p, i) => `<tr><td>${medals[i] || ''} ${esc(playerName(p.id))}</td><td>★ ${p.score}</td></tr>`).join('')}
         </table>
         ${state.spectating && state.seatNextRound ? `<div class="notice">You'll take a bot's seat in the next round.</div>` : ''}
         ${isHost()
-          ? `<button id="next" class="primary block">Next round</button>
+          ? `<button id="next" class="primary block big">▶ Next round</button>
              <button id="lobby2" class="ghost block">Back to lobby</button>`
-          : '<div class="center muted">Waiting for the host to start the next round…</div>'}
+          : '<div class="center muted">Waiting for the host to start the next round<span class="dots"><i></i><i></i><i></i></span></div>'}
       </div></div>`;
   }
 
@@ -734,7 +805,16 @@
     if (lobby) lobby.onclick = () => send('game:toLobby');
   }
 
+  let renderedScreen = null;
+
   function render() {
+    const screen = !state ? 'home' : (state.phase === 'lobby' ? 'lobby' : 'game');
+    if (screen !== renderedScreen) {
+      renderedScreen = screen;
+      app.classList.remove('screen-in');
+      void app.offsetWidth; // restart the animation
+      app.classList.add('screen-in');
+    }
     preserveInputs(() => {
       if (!state) renderHome();
       else if (state.phase === 'lobby') renderLobby();
