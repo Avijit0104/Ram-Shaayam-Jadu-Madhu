@@ -168,7 +168,16 @@ label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 
   min-width: 0;
   transition: border-color 0.2s, background 0.2s;
 }
-.seat.turn { border-color: var(--accent); background: rgba(251, 191, 36, 0.12); box-shadow: 0 0 0 1px var(--accent); }
+.seat.turn {
+  border-color: var(--accent);
+  background: rgba(251, 191, 36, 0.12);
+  box-shadow: 0 0 0 1px var(--accent);
+  animation: turn-pulse 1.6s ease-in-out infinite;
+}
+@keyframes turn-pulse {
+  0%, 100% { box-shadow: 0 0 0 1px var(--accent), 0 0 0 0 rgba(251, 191, 36, 0.45); }
+  50% { box-shadow: 0 0 0 1px var(--accent), 0 0 0 6px rgba(251, 191, 36, 0); }
+}
 .seat.you .seat-name::after { content: " (you)"; color: var(--muted); font-weight: 400; }
 .seat.offline { opacity: 0.55; }
 .seat-name { font-weight: 600; font-size: 0.85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -197,6 +206,52 @@ label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 
   font-weight: 600;
 }
 .status.mine { background: var(--accent); color: var(--accent-ink); }
+.status .secs { font-variant-numeric: tabular-nums; opacity: 0.85; }
+
+/* Turn countdown */
+.timer {
+  height: 5px;
+  margin-top: 8px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+}
+.timer-bar {
+  height: 100%;
+  width: 100%;
+  border-radius: inherit;
+  background: var(--ok);
+  transition: width 0.2s linear, background 0.3s;
+}
+.status.mine .timer-bar { background: var(--accent-ink); }
+.timer-bar.low, .status.mine .timer-bar.low { background: var(--danger); }
+
+.watchers { margin-top: 6px; }
+.watching { margin-top: 18px; }
+.watching-icon { font-size: 2rem; }
+
+/* A card back flying between seats (see animatePass) */
+.flying-card {
+  position: fixed;
+  width: 26px;
+  height: 38px;
+  border-radius: 4px;
+  background: repeating-linear-gradient(45deg, #7c2d12, #7c2d12 3px, #9a3412 3px, #9a3412 6px);
+  border: 1.5px solid rgba(255, 255, 255, 0.85);
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+  z-index: 25;
+}
+
+.confetti {
+  position: fixed;
+  top: 0;
+  width: 8px;
+  height: 14px;
+  border-radius: 2px;
+  pointer-events: none;
+  z-index: 26;
+}
 .lastpass { text-align: center; font-size: 0.85rem; color: var(--muted); min-height: 1.2em; }
 
 .hand-title { display: flex; justify-content: space-between; align-items: baseline; margin: 18px 0 10px; }
@@ -229,6 +284,13 @@ label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 
 .card .label { font-size: 0.85rem; font-weight: 700; margin-top: 6px; max-width: 92%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card .corner { position: absolute; top: 6px; left: 8px; font-size: 0.75rem; font-weight: 800; }
 .card.selected { transform: translateY(-10px); box-shadow: 0 0 0 3px var(--accent), 0 12px 20px rgba(0, 0, 0, 0.45); }
+.card:not(:disabled):active { transform: translateY(-4px) scale(0.97); }
+/* The card you just received drops into your hand */
+.card.arrive { animation: card-arrive 0.6s cubic-bezier(.2, .8, .3, 1.2) 0.45s both; }
+@keyframes card-arrive {
+  from { transform: translateY(-60px) rotate(-12deg) scale(0.6); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
 .card.locked { filter: saturate(0.5); }
 .card.locked:disabled { opacity: 1; }
 .card .lock {
@@ -263,6 +325,11 @@ label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 
   padding: 24px 16px calc(24px + var(--credit-h) + env(safe-area-inset-bottom));
   z-index: 10;
 }
+/* Fades in after the winning card has landed; only the first time it's shown. */
+.overlay.enter { animation: overlay-in 0.35s ease-out 0.7s both; }
+.overlay.enter .panel { animation: panel-in 0.4s cubic-bezier(.2, .8, .3, 1.2) 0.75s both; }
+@keyframes overlay-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes panel-in { from { transform: translateY(30px) scale(0.95); } to { transform: none; } }
 .overlay .panel { width: 100%; max-width: 520px; background: var(--bg-2); }
 .win-title { font-size: 1.5rem; text-align: center; }
 .win-title .who { color: var(--accent); }
@@ -316,4 +383,9 @@ label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 
 @media (max-width: 360px) {
   .hand { grid-template-columns: repeat(3, 1fr); }
   .card .big { font-size: 2rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .seat.turn, .card.arrive, .overlay.enter, .overlay.enter .panel { animation: none; }
+  .card, .timer-bar { transition: none; }
 }

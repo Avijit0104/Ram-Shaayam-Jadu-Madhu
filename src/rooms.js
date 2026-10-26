@@ -5,6 +5,8 @@
 // sent on the socket handshake) and a public `id` that is safe to show to others.
 // Bots (`bot: true`, `token: null`) exist only while a game runs: they are added on
 // start to fill seats up to MIN_PLAYERS and removed when the room returns to the lobby.
+// People who join mid-game are spectators (`spectator: true`) until a bot seat frees
+// up at the next round, or until the room returns to the lobby.
 
 const crypto = require('crypto');
 const {
@@ -23,6 +25,13 @@ const MAX_PLAYER_NAME = 16;
 const MAX_CARD_NAME = 12;
 const MAX_EXTRA_NAMES = MAX_PLAYERS - BASE_NAMES.length;
 const ROOM_IDLE_MS = 2 * 60 * 60 * 1000;
+
+// Turn timing. Every turn has a deadline; when it passes, the server plays a card
+// for that seat (see pendingTurn / autoPass).
+const TURN_MS = 30 * 1000; // a human's time to pick a card
+const OFFLINE_GRACE_MS = 10 * 1000; // how long to wait for an offline player to come back
+const BOT_MIN_MS = 1200; // bots pause so people can follow the cards
+const BOT_JITTER_MS = 800;
 
 function cleanName(raw, max, label) {
   const name = String(raw ?? '').replace(/\s+/g, ' ').trim();
@@ -81,13 +90,21 @@ class RoomStore {
       token,
       name,
       bot,
+      spectator: false,
       connected: true,
+      offlineSince: null,
       score: 0,
     };
   }
 
+  // Real people, seated or watching.
   humans(room) {
     return room.players.filter((p) => !p.bot);
+  }
+
+  // Everyone who holds cards (or will, at the next deal).
+  seated(room) {
+    return room.players.filter((p) => !p.spectator);
   }
 
   botsNeeded(room) {
@@ -102,8 +119,26 @@ class RoomStore {
     }
   }
 
-  removeBots(room) {
+  // Spectators take over bot seats in place, so the seating order stays the same.
+  seatSpectators(room) {
+    for (const s of room.players.filter((p) => p.spectator)) {
+      if (!room.players.some((p) => p.bot)) break;
+      room.players = room.players.filter((p) => p !== s);
+      const botIndex = room.players.findIndex((p) => p.bot);
+      s.spectator = false;
+      room.players[botIndex] = s;
+    }
+  }
+
+  returnToLobby(room) {
+    room.phase = 'lobby';
+    room.round = null;
     room.players = this.humans(room);
+    for (const p of room.players) p.spectator = false;
+  }
+
+  currentPlayer(room) {
+    return room.players.find((p) => p.id === currentPlayerId(room.round)) || null;
   }
 
   // ---- lobby --------------------------------------------------------------
@@ -129,6 +164,7 @@ class RoomStore {
     return room;
   }
 
+  // In the lobby you get a seat; once a game is running you watch until a seat frees up.
   joinRoom(token, rawCode, rawName) {
     const code = String(rawCode ?? '').trim().toUpperCase();
     const room = this.rooms.get(code);
@@ -137,20 +173,22 @@ class RoomStore {
     const existing = this.playerForToken(room, token);
     if (existing) {
       existing.connected = true;
+      existing.offlineSince = null;
       this.touch(room);
       return room;
     }
 
     const name = cleanName(rawName, MAX_PLAYER_NAME, 'Name');
-    if (room.phase !== 'lobby') throw new GameError('That game has already started');
-    if (room.players.length >= MAX_PLAYERS) throw new GameError(`Room is full (max ${MAX_PLAYERS})`);
+    if (this.humans(room).length >= MAX_PLAYERS) throw new GameError(`Room is full (max ${MAX_PLAYERS})`);
     if (room.players.some((p) => p.name.toLowerCase() === name.toLowerCase())) {
       throw new GameError('Someone in the room already has that name');
     }
 
     this.leave(token);
-    room.players.push(this.newPlayer(token, name));
-    room.notice = null;
+    const player = this.newPlayer(token, name);
+    player.spectator = room.phase !== 'lobby';
+    room.players.push(player);
+    if (room.phase === 'lobby') room.notice = null;
     this.tokens.set(token, room.code);
     this.touch(room);
     return room;
@@ -178,18 +216,17 @@ class RoomStore {
   }
 
   removePlayer(room, player, notice) {
+    const heldCards = room.phase !== 'lobby' && room.round && room.round.order.includes(player.id);
     room.players = room.players.filter((p) => p !== player);
     const humans = this.humans(room);
     if (humans.length === 0) {
       this.rooms.delete(room.code);
       return null;
     }
-    if (room.hostId === player.id) room.hostId = humans[0].id;
-    if (room.phase !== 'lobby') {
-      // A round can't continue with a missing hand.
-      room.phase = 'lobby';
-      room.round = null;
-      this.removeBots(room);
+    if (room.hostId === player.id) room.hostId = (humans.find((p) => !p.spectator) || humans[0]).id;
+    if (heldCards) {
+      // A round can't continue with a missing hand. Spectators leaving don't matter.
+      this.returnToLobby(room);
       notice += ' — back to the lobby';
     }
     room.notice = notice;
@@ -242,67 +279,97 @@ class RoomStore {
   nextRound(token) {
     const { room } = this.requireHost(token);
     if (room.phase !== 'roundOver') throw new GameError('The round is still going');
+    this.seatSpectators(room);
     this.deal(room, room.round.names);
     return room;
   }
 
   toLobby(token) {
     const { room } = this.requireHost(token);
-    room.phase = 'lobby';
-    room.round = null;
+    this.returnToLobby(room);
     room.notice = null;
-    this.removeBots(room);
     this.touch(room);
     return room;
   }
 
   deal(room, names) {
-    const order = room.players.map((p) => p.id);
+    const order = this.seated(room).map((p) => p.id);
     const starter = room.nextStarterIndex % order.length;
     room.round = dealRound(order, names, starter, this.rng);
     room.nextStarterIndex = (starter + 1) % order.length;
     room.roundNumber++;
     room.phase = 'playing';
     room.notice = null;
+    this.startTurn(room);
     this.touch(room);
   }
 
   pass(token, cardId) {
     const { room, player } = this.requireMembership(token);
     if (room.phase !== 'playing') throw new GameError('No round in progress');
-    this.applyPass(room, player.id, cardId);
+    this.applyPass(room, player.id, cardId, false);
     return room;
   }
 
-  // If it's a bot's turn, returns a ticket identifying this exact turn, else null.
-  pendingBotTurn(room) {
-    if (!room || room.phase !== 'playing') return null;
-    const current = room.players.find((p) => p.id === currentPlayerId(room.round));
-    if (!current || !current.bot) return null;
-    return { code: room.code, roundNumber: room.roundNumber, passCount: room.round.passCount };
-  }
-
-  // Plays the bot move for a ticket from pendingBotTurn, if that turn is still current.
-  botPass(ticket) {
-    const room = this.rooms.get(ticket.code);
-    const now = this.pendingBotTurn(room);
-    if (!now || now.roundNumber !== ticket.roundNumber || now.passCount !== ticket.passCount) {
-      return null;
-    }
-    const botId = currentPlayerId(room.round);
-    const card = chooseBotCard(room.round.hands[botId], room.round.receivedCardId, this.rng);
-    this.applyPass(room, botId, card.id);
-    return room;
-  }
-
-  applyPass(room, playerId, cardId) {
+  applyPass(room, playerId, cardId, timedOut) {
     passCard(room.round, playerId, cardId);
+    if (timedOut) room.round.lastPass.auto = true;
     if (room.round.winner) {
       const winner = room.players.find((p) => p.id === room.round.winner.playerId);
       if (winner) winner.score++;
       room.phase = 'roundOver';
+    } else {
+      this.startTurn(room);
     }
     this.touch(room);
+  }
+
+  // ---- turn timing --------------------------------------------------------
+
+  startTurn(room) {
+    const round = room.round;
+    const current = this.currentPlayer(room);
+    const now = this.now();
+    round.turnStartedAt = now;
+    round.turnDeadline = now + (current && current.bot ? BOT_MIN_MS + this.rng() * BOT_JITTER_MS : TURN_MS);
+  }
+
+  // When the current turn gets played automatically: bots after a short pause, people
+  // when their time runs out, or sooner if they've been offline for OFFLINE_GRACE_MS.
+  turnDueAt(room) {
+    const round = room.round;
+    const current = this.currentPlayer(room);
+    if (current && !current.bot && !current.connected) {
+      const since = Math.max(round.turnStartedAt, current.offlineSince || 0);
+      return Math.min(round.turnDeadline, since + OFFLINE_GRACE_MS);
+    }
+    return round.turnDeadline;
+  }
+
+  // A ticket identifying the current turn and when it's due, or null if no round is running.
+  pendingTurn(room) {
+    if (!room || room.phase !== 'playing' || room.round.winner) return null;
+    return {
+      code: room.code,
+      roundNumber: room.roundNumber,
+      passCount: room.round.passCount,
+      dueAt: this.turnDueAt(room),
+    };
+  }
+
+  // Plays a card for whoever's turn it is, if the ticket's turn is still current and due.
+  // Bots and timed-out people use the same strategy.
+  autoPass(ticket) {
+    const room = this.rooms.get(ticket.code);
+    const now = this.pendingTurn(room);
+    if (!now || now.roundNumber !== ticket.roundNumber || now.passCount !== ticket.passCount) {
+      return null;
+    }
+    if (this.now() < now.dueAt) return null; // e.g. the player came back online
+    const current = this.currentPlayer(room);
+    const card = chooseBotCard(room.round.hands[current.id], room.round.receivedCardId, this.rng);
+    this.applyPass(room, current.id, card.id, !current.bot);
+    return room;
   }
 
   // ---- connection tracking ------------------------------------------------
@@ -312,6 +379,7 @@ class RoomStore {
     const player = room && this.playerForToken(room, token);
     if (!player) return null;
     player.connected = connected;
+    player.offlineSince = connected ? null : this.now();
     this.touch(room);
     return room;
   }
@@ -334,11 +402,14 @@ class RoomStore {
   viewFor(room, playerId) {
     const round = room.round;
     const turnId = round && !round.winner ? currentPlayerId(round) : null;
+    const me = room.players.find((p) => p.id === playerId);
+    const spectating = !!(me && me.spectator);
     const view = {
       code: room.code,
       phase: room.phase,
       youId: playerId,
       hostId: room.hostId,
+      serverNow: this.now(),
       roundNumber: room.roundNumber,
       notice: room.notice,
       baseNames: BASE_NAMES,
@@ -347,10 +418,15 @@ class RoomStore {
       botsNeeded: room.phase === 'lobby' ? this.botsNeeded(room) : 0,
       minPlayers: MIN_PLAYERS,
       maxPlayers: MAX_PLAYERS,
+      spectating,
+      // Spectators are seated in join order, one per bot.
+      seatNextRound: spectating
+        && room.players.filter((p) => p.spectator).indexOf(me) < room.players.filter((p) => p.bot).length,
       players: room.players.map((p) => ({
         id: p.id,
         name: p.name,
         bot: p.bot,
+        spectator: p.spectator,
         connected: p.connected,
         score: p.score,
         cardCount: round && round.hands[p.id] ? round.hands[p.id].length : 0,
@@ -363,6 +439,8 @@ class RoomStore {
         order: round.order,
         starterId: round.order[round.starterIndex],
         turnPlayerId: turnId,
+        turnStartedAt: round.turnStartedAt,
+        turnDueAt: turnId ? this.turnDueAt(room) : null,
         yourHand: round.hands[playerId] || [],
         lockedCardId: turnId === playerId ? round.receivedCardId : null,
         lastPass: round.lastPass,
@@ -375,4 +453,12 @@ class RoomStore {
   }
 }
 
-module.exports = { RoomStore, MAX_PLAYER_NAME, MAX_CARD_NAME };
+module.exports = {
+  RoomStore,
+  MAX_PLAYER_NAME,
+  MAX_CARD_NAME,
+  TURN_MS,
+  OFFLINE_GRACE_MS,
+  BOT_MIN_MS,
+  BOT_JITTER_MS,
+};

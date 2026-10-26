@@ -2,10 +2,31 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { RoomStore } = require('../src/rooms');
+const {
+  RoomStore,
+  TURN_MS,
+  OFFLINE_GRACE_MS,
+  BOT_MIN_MS,
+  BOT_JITTER_MS,
+} = require('../src/rooms');
 const { chooseBotCard } = require('../src/bots');
 
 const tok = (n) => String(n).padStart(32, '0');
+
+// A store whose clock only moves when a test moves it.
+function clockedStore() {
+  const clock = { t: 1000000 };
+  return { store: new RoomStore({ now: () => clock.t }), clock };
+}
+
+// Jumps the clock to when the current turn is due and lets the server play it.
+function runDueTurn(store, clock, room) {
+  const ticket = store.pendingTurn(room);
+  clock.t = Math.max(clock.t, ticket.dueAt);
+  return store.autoPass(ticket);
+}
+
+const isBotTurn = (room) => room.players.find((p) => p.id === room.round.order[room.round.turnIndex]).bot;
 
 function roomWith(count) {
   const store = new RoomStore();
@@ -138,35 +159,157 @@ test('bot names never clash with human names', () => {
 });
 
 test('a solo player can finish a round against bots', () => {
-  const store = new RoomStore();
+  const { store, clock } = clockedStore();
   const room = store.createRoom(tok(1), 'Solo');
   store.startGame(tok(1));
   const me = room.players[0];
   for (let i = 0; i < 10000 && room.phase === 'playing'; i++) {
-    const ticket = store.pendingBotTurn(room);
-    if (ticket) {
-      assert.ok(store.botPass(ticket));
+    if (isBotTurn(room)) {
+      assert.ok(runDueTurn(store, clock, room));
     } else {
       const r = room.round;
-      const card = chooseBotCard(r.hands[me.id], r.receivedCardId);
-      store.pass(tok(1), card.id);
+      store.pass(tok(1), chooseBotCard(r.hands[me.id], r.receivedCardId).id);
     }
   }
   assert.equal(room.phase, 'roundOver');
 });
 
-test('stale bot tickets are ignored', () => {
+test('stale turn tickets are ignored', () => {
+  const { store, clock } = clockedStore();
+  const room = store.createRoom(tok(1), 'Solo');
+  store.startGame(tok(1));
+  const ticket = store.pendingTurn(room);
+  clock.t = ticket.dueAt;
+  assert.ok(store.autoPass(ticket));
+  assert.equal(store.autoPass(ticket), null);
+});
+
+test('bots move 1.2-2s into their turn', () => {
+  const { store, clock } = clockedStore();
+  const room = store.createRoom(tok(1), 'Solo');
+  store.startGame(tok(1));
+  const r = room.round;
+  store.pass(tok(1), chooseBotCard(r.hands[room.players[0].id], r.receivedCardId).id);
+  assert.ok(isBotTurn(room));
+  const wait = store.pendingTurn(room).dueAt - clock.t;
+  assert.ok(wait >= BOT_MIN_MS && wait <= BOT_MIN_MS + BOT_JITTER_MS, `bot wait ${wait}`);
+});
+
+test('a person who runs out of time gets a card passed for them', () => {
+  const { store, clock } = clockedStore();
+  const room = store.createRoom(tok(1), 'Solo'); // the host starts round 1
+  store.startGame(tok(1));
+  const ticket = store.pendingTurn(room);
+  assert.equal(ticket.dueAt - clock.t, TURN_MS);
+
+  clock.t += TURN_MS - 1;
+  assert.equal(store.autoPass(ticket), null, 'not due yet');
+  clock.t += 1;
+  assert.ok(store.autoPass(ticket));
+  assert.equal(room.round.hands[room.players[0].id].length, 3);
+  assert.equal(room.round.lastPass.auto, true);
+});
+
+test('bot passes are not marked as timed out', () => {
+  const { store, clock } = clockedStore();
+  const room = store.createRoom(tok(1), 'Solo');
+  store.startGame(tok(1));
+  const r = room.round;
+  store.pass(tok(1), chooseBotCard(r.hands[room.players[0].id], r.receivedCardId).id);
+  runDueTurn(store, clock, room);
+  assert.equal(room.round.lastPass.auto, undefined);
+});
+
+test('an offline player is skipped after the grace period, not the full turn', () => {
+  const { store, clock } = clockedStore();
+  const room = store.createRoom(tok(1), 'Solo');
+  store.startGame(tok(1));
+  clock.t += 5000;
+  store.setConnected(tok(1), false);
+  assert.equal(store.pendingTurn(room).dueAt, clock.t + OFFLINE_GRACE_MS);
+
+  // Coming back restores the normal deadline.
+  store.setConnected(tok(1), true);
+  assert.equal(store.pendingTurn(room).dueAt, room.round.turnStartedAt + TURN_MS);
+});
+
+test('a player already offline when their turn starts is skipped after the grace period', () => {
+  const { store, clock } = clockedStore();
+  const room = store.createRoom(tok(1), 'Solo');
+  store.startGame(tok(1));
+  store.setConnected(tok(1), false);
+  const me = room.players[0];
+  let checked = false;
+  for (let i = 0; i < 1000 && !checked; i++) {
+    if (room.phase === 'roundOver') store.nextRound(tok(1));
+    else if (!isBotTurn(room) && room.round.turnStartedAt > me.offlineSince) {
+      assert.equal(store.pendingTurn(room).dueAt, room.round.turnStartedAt + OFFLINE_GRACE_MS);
+      checked = true;
+    } else {
+      clock.t += 1; // make the next turn start strictly after going offline
+      runDueTurn(store, clock, room);
+    }
+  }
+  assert.ok(checked);
+});
+
+test('people joining mid-game watch, then take a bot seat next round', () => {
+  const { store, clock } = clockedStore();
+  const room = store.createRoom(tok(1), 'Host');
+  store.joinRoom(tok(2), room.code, 'P2');
+  store.startGame(tok(1)); // 2 people + 2 bots
+  const order = room.round.order.slice();
+
+  store.joinRoom(tok(3), room.code, 'Late');
+  const late = room.players.find((p) => p.name === 'Late');
+  assert.equal(late.spectator, true);
+  assert.equal(room.phase, 'playing');
+  assert.deepEqual(room.round.order, order);
+  assert.throws(() => store.pass(tok(3), 'c0'), /not your turn/);
+
+  const view = store.viewFor(room, late.id);
+  assert.equal(view.spectating, true);
+  assert.equal(view.seatNextRound, true);
+  assert.deepEqual(view.round.yourHand, []);
+
+  // Finish the round, then deal again.
+  for (let i = 0; i < 10000 && room.phase === 'playing'; i++) runDueTurn(store, clock, room);
+  const firstBotSeat = order.findIndex((id) => room.players.find((p) => p.id === id).bot);
+  store.nextRound(tok(1));
+  assert.equal(late.spectator, false);
+  assert.equal(room.round.order.length, 4);
+  assert.equal(room.round.order[firstBotSeat], late.id);
+  assert.equal(room.players.filter((p) => p.bot).length, 1);
+});
+
+test('without a bot seat, late joiners wait for the lobby', () => {
+  const { store, room } = roomWith(4);
+  store.startGame(tok(1));
+  store.joinRoom(tok(5), room.code, 'Late');
+  const late = room.players.find((p) => p.name === 'Late');
+  assert.equal(store.viewFor(room, late.id).seatNextRound, false);
+  store.toLobby(tok(1));
+  assert.equal(late.spectator, false);
+  assert.equal(room.players.length, 5);
+});
+
+test('a spectator leaving does not end the round', () => {
+  const { store, room } = roomWith(4);
+  store.startGame(tok(1));
+  store.joinRoom(tok(5), room.code, 'Late');
+  store.leave(tok(5));
+  assert.equal(room.phase, 'playing');
+  assert.equal(room.players.length, 4);
+});
+
+test('spectators count toward the room limit and cannot reuse bot names', () => {
   const store = new RoomStore();
   const room = store.createRoom(tok(1), 'Solo');
   store.startGame(tok(1));
-  // Hand the turn to a bot, grab its ticket, then let it move.
-  if (!store.pendingBotTurn(room)) {
-    const r = room.round;
-    store.pass(tok(1), chooseBotCard(r.hands[room.players[0].id], r.receivedCardId).id);
-  }
-  const ticket = store.pendingBotTurn(room);
-  assert.ok(store.botPass(ticket));
-  assert.equal(store.botPass(ticket), null);
+  const botName = room.players.find((p) => p.bot).name;
+  assert.throws(() => store.joinRoom(tok(2), room.code, botName), /already has that name/);
+  for (let i = 2; i <= 6; i++) store.joinRoom(tok(i), room.code, `W${i}`);
+  assert.throws(() => store.joinRoom(tok(7), room.code, 'W7'), /full/);
 });
 
 test('last human leaving deletes a room with bots', () => {

@@ -32,6 +32,11 @@
   let wasMyTurn = false;
   let busy = false;
   let wakeLock = null;
+  let clockOffset = 0; // server clock minus ours, for turn countdowns
+  let overlayShownForRound = 0; // round whose result popup has already animated in
+  let lastTickSecond = null;
+
+  const reducedMotion = !!(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches);
 
   const app = document.getElementById('app');
   const connBanner = document.getElementById('conn');
@@ -68,6 +73,194 @@
       });
     });
   }
+
+  // ---- sounds (synthesised with Web Audio, no files to download) ----
+
+  const sound = (() => {
+    let ctx = null;
+    let muted = storageGet('rsjm-muted') === '1';
+
+    // Browsers only allow audio after a tap, so create/resume the context on any tap.
+    function unlock() {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      if (!ctx) ctx = new AC();
+      if (ctx.state === 'suspended') ctx.resume();
+    }
+    window.addEventListener('pointerdown', unlock, { passive: true });
+    window.addEventListener('keydown', unlock);
+
+    function tone(t, freq, dur, type, vol) {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = type;
+      o.frequency.setValueAtTime(freq, t);
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(vol, t + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      o.connect(g).connect(ctx.destination);
+      o.start(t);
+      o.stop(t + dur + 0.05);
+    }
+
+    // A short burst of filtered noise sounds like a card sliding across a table.
+    function swish(t, len) {
+      const buf = ctx.createBuffer(1, Math.floor(ctx.sampleRate * len), ctx.sampleRate);
+      const d = buf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / d.length);
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      const f = ctx.createBiquadFilter();
+      f.type = 'bandpass';
+      f.frequency.setValueAtTime(700, t);
+      f.frequency.exponentialRampToValueAtTime(3200, t + len);
+      const g = ctx.createGain();
+      g.gain.value = 0.35;
+      src.connect(f).connect(g).connect(ctx.destination);
+      src.start(t);
+    }
+
+    const sounds = {
+      pass: (t) => swish(t, 0.18),
+      deal: (t) => { for (let i = 0; i < 5; i++) swish(t + i * 0.07, 0.06); },
+      yourTurn: (t) => { tone(t, 660, 0.15, 'triangle', 0.2); tone(t + 0.12, 990, 0.25, 'triangle', 0.2); },
+      tick: (t) => tone(t, 1250, 0.05, 'square', 0.05),
+      timeout: (t) => tone(t, 220, 0.3, 'sawtooth', 0.08),
+      win: (t) => [523, 659, 784, 1047].forEach((f, i) => tone(t + i * 0.12, f, 0.35, 'triangle', 0.2)),
+      lose: (t) => [392, 330, 262].forEach((f, i) => tone(t + i * 0.16, f, 0.3, 'sine', 0.15)),
+    };
+
+    return {
+      play(name) {
+        if (muted || !ctx || ctx.state !== 'running') return;
+        try { sounds[name](ctx.currentTime + 0.01); } catch (e) { /* ignore audio errors */ }
+      },
+      toggle() {
+        muted = !muted;
+        storageSet('rsjm-muted', muted ? '1' : '0');
+        if (!muted) { unlock(); this.play('yourTurn'); }
+      },
+      get muted() { return muted; },
+    };
+  })();
+
+  function muteButton() {
+    return `<button id="mute" class="ghost tiny" aria-label="${sound.muted ? 'Turn sound on' : 'Turn sound off'}">${sound.muted ? '🔇' : '🔊'}</button>`;
+  }
+  function bindMute() {
+    const b = document.getElementById('mute');
+    if (b) b.onclick = () => { sound.toggle(); render(); };
+  }
+
+  // ---- animations ----
+
+  // A card back flies from one seat to another.
+  function animatePass(fromId, toId) {
+    if (reducedMotion) return;
+    const a = app.querySelector(`[data-seat="${fromId}"]`);
+    const b = app.querySelector(`[data-seat="${toId}"]`);
+    if (!a || !b || !a.animate) return;
+    const ra = a.getBoundingClientRect();
+    const rb = b.getBoundingClientRect();
+    const dx = (rb.left + rb.width / 2) - (ra.left + ra.width / 2);
+    const dy = (rb.top + rb.height / 2) - (ra.top + ra.height / 2);
+    const el = document.createElement('div');
+    el.className = 'flying-card';
+    el.style.left = `${ra.left + ra.width / 2}px`;
+    el.style.top = `${ra.top + ra.height / 2}px`;
+    document.body.appendChild(el);
+    el.animate([
+      { transform: 'translate(-50%, -50%) scale(0.7) rotate(0deg)', opacity: 0 },
+      { transform: `translate(calc(-50% + ${dx / 2}px), calc(-50% + ${dy / 2 - 40}px)) scale(1.2) rotate(160deg)`, opacity: 1, offset: 0.5 },
+      { transform: `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px)) scale(0.8) rotate(360deg)`, opacity: 0.3 },
+    ], { duration: 650, easing: 'ease-in-out' }).onfinish = () => el.remove();
+    b.animate([{ transform: 'scale(1)' }, { transform: 'scale(1.08)' }, { transform: 'scale(1)' }],
+      { duration: 300, delay: 600 });
+  }
+
+  function confetti() {
+    if (reducedMotion || !document.body.animate) return;
+    const colors = ['#ea8a0c', '#2f7de1', '#8b5cf6', '#16a34a', '#e11d48', '#fbbf24'];
+    for (let i = 0; i < 70; i++) {
+      const el = document.createElement('div');
+      el.className = 'confetti';
+      el.style.left = `${Math.random() * 100}vw`;
+      el.style.background = colors[i % colors.length];
+      document.body.appendChild(el);
+      const drift = (Math.random() - 0.5) * 200;
+      el.animate([
+        { transform: 'translate(0, -20px) rotate(0deg)', opacity: 1 },
+        { transform: `translate(${drift}px, 105vh) rotate(${Math.random() * 900}deg)`, opacity: 0.9 },
+      ], { duration: 1800 + Math.random() * 1400, delay: Math.random() * 400, easing: 'cubic-bezier(.2,.6,.4,1)' })
+        .onfinish = () => el.remove();
+    }
+  }
+
+  // Sounds and animations for what changed between two views (runs after render).
+  function effects(prev, next) {
+    if (!next || !next.round || next.phase === 'lobby') return;
+    const r = next.round;
+    const me = next.youId;
+    const sameRound = prev && prev.round && prev.roundNumber === next.roundNumber;
+
+    if (!sameRound) {
+      if (prev) { // a fresh deal, not a page load or reconnect
+        sound.play('deal');
+        if (r.turnPlayerId === me) setTimeout(() => sound.play('yourTurn'), 450);
+      }
+      return;
+    }
+
+    const pr = prev.round;
+    if (r.passCount > pr.passCount && r.lastPass) {
+      animatePass(r.lastPass.from, r.lastPass.to);
+      if (r.lastPass.auto && r.lastPass.from === me) {
+        sound.play('timeout');
+        toast("⏱ Time's up! A card was passed for you");
+      } else if (r.lastPass.to === me && !r.winner) {
+        sound.play('yourTurn');
+      } else {
+        sound.play('pass');
+      }
+      if (r.lastPass.to === me && r.lockedCardId) {
+        const card = app.querySelector(`[data-card="${r.lockedCardId}"]`);
+        if (card) card.classList.add('arrive');
+      }
+    }
+
+    if (r.winner && !pr.winner) {
+      const won = r.winner.playerId === me;
+      setTimeout(() => {
+        sound.play(won ? 'win' : 'lose');
+        if (won) confetti();
+      }, 650);
+    }
+  }
+
+  // ---- turn countdown (updates in place, no re-render) ----
+
+  function serverNow() {
+    return Date.now() + clockOffset;
+  }
+
+  function updateTimer() {
+    const bar = document.getElementById('timer-bar');
+    const secs = document.getElementById('timer-secs');
+    const r = state && state.round;
+    if (!bar || !r || !r.turnDueAt) return;
+    const total = Math.max(1, r.turnDueAt - r.turnStartedAt);
+    const left = Math.max(0, r.turnDueAt - serverNow());
+    const s = Math.ceil(left / 1000);
+    bar.style.width = `${(left / total) * 100}%`;
+    bar.classList.toggle('low', left <= 10000);
+    if (secs) secs.textContent = `${s}s`;
+    if (r.turnPlayerId === state.youId && s <= 5 && s > 0 && s !== lastTickSecond) {
+      lastTickSecond = s;
+      sound.play('tick');
+      if (s === 5 && navigator.vibrate) navigator.vibrate([60, 60, 60]);
+    }
+  }
+  setInterval(updateTimer, 200);
 
   function player(id) {
     return state.players.find((p) => p.id === id);
@@ -164,9 +357,10 @@
             <li>1 to 6 players. If fewer than 4 people join, bots fill the empty seats.</li>
             <li>Each player gets 4 cards. There are 4 cards of each name: Ram, Shaayam, Jadu, Madhu (the host adds one more name for each player beyond 4).</li>
             <li>You only see your own cards.</li>
-            <li>On your turn, pass one card to the next player.</li>
+            <li>On your turn, pass one card to the next player. You have 30 seconds, or a card is passed for you.</li>
             <li>You can't pass the card you just received. You can pass it on a later turn.</li>
             <li>First to hold 4 cards of the same name wins the round.</li>
+            <li>Joined late? Watch the round, then take a bot's seat in the next one.</li>
           </ol>
         </details>
       </div>`;
@@ -229,7 +423,7 @@
 
     app.innerHTML = `
       <div class="stack">
-        <div class="topbar"><h2>RSJM</h2><button id="leave" class="ghost tiny">Leave</button></div>
+        <div class="topbar"><h2>RSJM</h2><div class="row">${muteButton()}<button id="leave" class="ghost tiny">Leave</button></div></div>
         ${state.notice ? `<div class="notice">${esc(state.notice)}</div>` : ''}
         <div class="panel center stack">
           <div class="muted small">Room code</div>
@@ -267,6 +461,7 @@
 
     document.getElementById('leave').onclick = () => send('room:leave');
     document.getElementById('share').onclick = shareInvite;
+    bindMute();
     const startBtn = document.getElementById('start');
     if (startBtn) startBtn.onclick = () => send('game:start');
 
@@ -305,25 +500,38 @@
   function renderGame() {
     const r = state.round;
     const me = state.youId;
+    const watching = state.spectating;
     const myTurn = r.turnPlayerId === me;
     const order = r.order;
-    const nextId = order[(order.indexOf(r.turnPlayerId) + 1) % order.length];
-    const myNextId = order[(order.indexOf(me) + 1) % order.length];
+    const after = (id) => order[(order.indexOf(id) + 1) % order.length];
+    const myNextId = after(me);
 
     // Sort hand by card-name order so sets are easy to spot.
     const hand = r.yourHand.slice().sort((a, b) => nameIndex(a.name) - nameIndex(b.name) || a.id.localeCompare(b.id));
     if (!hand.some((c) => c.id === selectedCardId) || selectedCardId === r.lockedCardId) selectedCardId = null;
 
+    // Countdown for people's turns; bots move within a couple of seconds.
+    const turnPlayer = r.turnPlayerId ? player(r.turnPlayerId) : null;
+    const showTimer = !!(turnPlayer && !turnPlayer.bot && r.turnDueAt);
+    const secs = showTimer ? ' <span id="timer-secs" class="secs"></span>' : '';
+    const timer = showTimer ? '<div class="timer"><div id="timer-bar" class="timer-bar"></div></div>' : '';
+
     let status;
-    if (r.winner) status = `<div class="status">Round over</div>`;
-    else if (myTurn) status = `<div class="status mine">Your turn: pick a card to pass to ${esc(playerName(myNextId))}</div>`;
-    else status = `<div class="status">${esc(playerName(r.turnPlayerId))} is passing a card to ${esc(playerName(nextId))}…</div>`;
+    if (r.winner) status = '<div class="status">Round over</div>';
+    else if (myTurn) status = `<div class="status mine">Your turn: pass a card to ${esc(playerName(myNextId))}${secs}${timer}</div>`;
+    else if (showTimer && !turnPlayer.connected) {
+      status = `<div class="status">${esc(playerName(r.turnPlayerId))} is offline. Passing for them in${secs}${timer}</div>`;
+    } else {
+      status = `<div class="status">${esc(playerName(r.turnPlayerId))} is passing a card to ${esc(playerName(after(r.turnPlayerId)))}…${secs}${timer}</div>`;
+    }
 
     let lastPass = '';
     if (r.lastPass) {
       const from = r.lastPass.from === me ? 'You' : esc(playerName(r.lastPass.from));
       const to = r.lastPass.to === me ? 'you' : esc(playerName(r.lastPass.to));
-      lastPass = `${from} passed a card to ${to}`;
+      lastPass = r.lastPass.auto
+        ? `⏱ Time's up for ${r.lastPass.from === me ? 'you' : from}. A card was passed to ${to}.`
+        : `${from} passed a card to ${to}`;
     } else {
       lastPass = `${r.starterId === me ? 'You start' : esc(playerName(r.starterId)) + ' starts'} this round`;
     }
@@ -334,7 +542,7 @@
       if (id === r.turnPlayerId) cls.push('turn');
       if (id === me) cls.push('you');
       if (!p.connected) cls.push('offline');
-      return `<div class="${cls.join(' ')}">
+      return `<div class="${cls.join(' ')}" data-seat="${esc(id)}">
         <div class="seat-order">${i + 1}</div>
         <div class="seat-name">${esc(playerName(id))}</div>
         <div class="backs">${'<span class="back"></span>'.repeat(p.cardCount)}</div>
@@ -342,34 +550,55 @@
       </div>`;
     }).join('');
 
+    const watchers = state.players.filter((p) => p.spectator);
+    const watchersLine = watchers.length
+      ? `<div class="muted small center watchers">👀 Watching: ${watchers.map((p) => esc(p.name) + (p.id === me ? ' (you)' : '')).join(', ')}</div>`
+      : '';
+
     const selected = hand.find((c) => c.id === selectedCardId);
     const passLabel = selected
       ? `Pass ${esc(selected.name)} to ${esc(playerName(myNextId))}`
       : 'Tap a card to select it';
 
+    const handSection = watching
+      ? `<div class="panel center stack watching">
+          <div class="watching-icon">👀</div>
+          <div><b>You're watching this round</b></div>
+          <div class="muted small">${state.seatNextRound
+            ? "You'll take a bot's seat when the next round starts."
+            : "All seats are taken. You'll get one when the host goes back to the lobby."}</div>
+        </div>`
+      : `<div class="hand-title"><h3>Your cards</h3><span class="muted small">${nameChips(r.names)}</span></div>
+        <div class="hand">
+          ${hand.map((c) => cardHtml(c, {
+            button: true,
+            selected: c.id === selectedCardId,
+            locked: c.id === r.lockedCardId,
+            disabled: !myTurn || c.id === r.lockedCardId || !!r.winner,
+          })).join('')}
+        </div>`;
+
+    // The result popup fades in once, after the last card has landed.
+    const overlayEnter = !!r.winner && overlayShownForRound !== state.roundNumber;
+    if (r.winner) overlayShownForRound = state.roundNumber;
+
     app.innerHTML = `
       <div class="topbar">
         <h2>RSJM</h2>
         <div class="row"><span class="muted small">Room ${esc(state.code)} · Round ${state.roundNumber}</span>
+        ${muteButton()}
         ${isHost() ? '<button id="tolobby" class="ghost tiny">Lobby</button>' : ''}</div>
       </div>
       <div class="seats">${seats}</div>
       <div class="muted small center" style="margin-top:6px">Cards go 1 → 2 → 3 … → 1</div>
+      ${watchersLine}
       ${status}
       <div class="lastpass">${lastPass}</div>
-      <div class="hand-title"><h3>Your cards</h3><span class="muted small">${nameChips(r.names)}</span></div>
-      <div class="hand">
-        ${hand.map((c) => cardHtml(c, {
-          button: true,
-          selected: c.id === selectedCardId,
-          locked: c.id === r.lockedCardId,
-          disabled: !myTurn || c.id === r.lockedCardId || !!r.winner,
-        })).join('')}
-      </div>
+      ${handSection}
       ${myTurn && !r.winner ? `<div class="actionbar"><div>
         <button id="pass" class="primary block" ${selected ? '' : 'disabled'}>${passLabel}</button>
       </div></div>` : ''}
-      ${r.winner ? renderRoundOver() : ''}`;
+      ${r.winner ? renderRoundOver(overlayEnter) : ''}`;
 
     app.querySelectorAll('[data-card]').forEach((b) => {
       b.onclick = () => {
@@ -391,20 +620,22 @@
     }
     const lobbyBtn = document.getElementById('tolobby');
     if (lobbyBtn) lobbyBtn.onclick = () => send('game:toLobby');
+    bindMute();
     bindRoundOver();
+    updateTimer();
 
     if (myTurn && !wasMyTurn && !r.winner && navigator.vibrate) navigator.vibrate(120);
     wasMyTurn = myTurn && !r.winner;
     requestWakeLock();
   }
 
-  function renderRoundOver() {
+  function renderRoundOver(enter) {
     const r = state.round;
     const w = r.winner;
     const youWon = w.playerId === state.youId;
-    const ranked = state.players.slice().sort((a, b) => b.score - a.score);
+    const ranked = state.players.filter((p) => !p.spectator).sort((a, b) => b.score - a.score);
     return `
-      <div class="overlay"><div class="panel stack">
+      <div class="overlay${enter ? ' enter' : ''}"><div class="panel stack">
         <div class="win-title">${youWon ? '🎉 <span class="who">You win!</span>' : `🎉 <span class="who">${esc(playerName(w.playerId))}</span> wins!`}</div>
         <div class="center muted">4 × <span class="chip n${nameIndex(w.name)}">${esc(w.name)}</span></div>
         <div class="reveal">
@@ -420,6 +651,7 @@
         <table class="scores">
           ${ranked.map((p) => `<tr><td>${esc(playerName(p.id))}</td><td>★ ${p.score}</td></tr>`).join('')}
         </table>
+        ${state.spectating && state.seatNextRound ? `<div class="notice">You'll take a bot's seat in the next round.</div>` : ''}
         ${isHost()
           ? `<button id="next" class="primary block">Next round</button>
              <button id="lobby2" class="ghost block">Back to lobby</button>`
@@ -448,13 +680,18 @@
   let lastScreen = 'home'; // the initial render() below draws home
   socket.on('state', (view, notice) => {
     const screen = view ? (view.phase === 'lobby' ? 'lobby' : 'game:' + view.roundNumber) : 'home';
+    const prev = state;
     state = view;
+    if (view) clockOffset = view.serverNow - Date.now();
+    const prevDue = prev && prev.round && prev.round.turnDueAt;
+    if (!view || !view.round || view.round.turnDueAt !== prevDue) lastTickSecond = null;
     if (!view) homeNotice = notice || null;
     if (view && view.code && location.search) history.replaceState(null, '', location.pathname);
     // Only rebuild the home screen when arriving there, so typed text survives reconnects.
     if (screen === 'home' && lastScreen === 'home' && !notice) return;
     lastScreen = screen;
     render();
+    effects(prev, view);
   });
 
   socket.on('connect', () => connBanner.classList.add('hidden'));

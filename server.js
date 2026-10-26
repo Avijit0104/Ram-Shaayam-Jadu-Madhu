@@ -27,25 +27,26 @@ function broadcast(room) {
   for (const p of room.players) {
     if (!p.bot) io.to(channel(p.token)).emit('state', store.viewFor(room, p.id));
   }
-  scheduleBot(room);
+  scheduleTurn(room);
 }
 
-// Bots move on a short timer so humans can follow the cards going round.
-// At most one pending timer per room; the ticket makes stale timers no-ops.
-const BOT_DELAY_MS = 1200;
-const botTimers = new Map(); // room code -> timeout
+// One timer per room for the current turn: bots moving, people running out of time,
+// or offline people being skipped. Every broadcast re-arms it from the turn's stored
+// due time, so state changes (like a player reconnecting) are picked up without drift.
+const turnTimers = new Map(); // room code -> timeout
 
-function scheduleBot(room) {
-  if (botTimers.has(room.code)) return;
-  const ticket = store.pendingBotTurn(room);
+function scheduleTurn(room) {
+  clearTimeout(turnTimers.get(room.code));
+  turnTimers.delete(room.code);
+  const ticket = store.pendingTurn(room);
   if (!ticket) return;
   const timer = setTimeout(() => {
-    botTimers.delete(ticket.code);
-    const updated = store.botPass(ticket);
+    turnTimers.delete(ticket.code);
+    const updated = store.autoPass(ticket);
     if (updated) broadcast(updated);
-    else if (store.rooms.has(ticket.code)) scheduleBot(store.rooms.get(ticket.code));
-  }, BOT_DELAY_MS + Math.random() * 800);
-  botTimers.set(room.code, timer);
+    else if (store.rooms.has(ticket.code)) scheduleTurn(store.rooms.get(ticket.code));
+  }, Math.max(0, ticket.dueAt - Date.now()));
+  turnTimers.set(room.code, timer);
 }
 
 function sendHome(token, notice) {
