@@ -39,11 +39,11 @@ function rigBlocker(room) {
   return host;
 }
 
-test('a reshuffle vote can only be asked for after 15 passes', () => {
+test('a reshuffle vote can only be asked for after MIN_PASSES_FOR_VOTE passes', () => {
   const { store, room, view } = votingRoom();
   room.round.passesSinceDeal = MIN_PASSES_FOR_VOTE - 1;
   assert.equal(view(2).canRequestVote, false);
-  assert.throws(() => store.requestReshuffle(tok(2)), /after 15 passes/);
+  assert.throws(() => store.requestReshuffle(tok(2)), new RegExp(`after ${MIN_PASSES_FOR_VOTE} passes`));
   room.round.passesSinceDeal = MIN_PASSES_FOR_VOTE;
   assert.equal(view(2).canRequestVote, true);
   store.requestReshuffle(tok(2));
@@ -143,7 +143,7 @@ test('when a blocking vote times out, missing votes count as Yes', () => {
   assert.equal(room.voteResult.passed, true);
 });
 
-test('blocking is not flagged before 15 passes', () => {
+test('blocking is not flagged before MIN_PASSES_FOR_VOTE passes', () => {
   const { store, room } = votingRoom();
   rigBlocker(room);
   room.round.passesSinceDeal = 3;

@@ -37,7 +37,7 @@ const BOT_JITTER_MS = 800;
 // Reshuffle votes. Anyone seated can ask after MIN_PASSES_FOR_VOTE passes (everyone
 // must agree). A player who blocks for BLOCK_STREAK turns in a row triggers a vote
 // automatically (majority, and the blocker can't vote).
-const MIN_PASSES_FOR_VOTE = 15;
+const MIN_PASSES_FOR_VOTE = 60;
 const BLOCK_STREAK = 4;
 const VOTE_MS = 20 * 1000;
 const VOTE_COOLDOWN_PASSES = 8; // after a failed vote

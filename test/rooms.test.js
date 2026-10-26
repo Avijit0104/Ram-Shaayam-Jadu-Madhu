@@ -184,12 +184,21 @@ test('stale turn tickets are ignored', () => {
   assert.equal(store.autoPass(ticket), null);
 });
 
+// A solo game where the host has made the first pass and it's now a bot's turn.
+// Re-deals in the rare case the bot wins straight away on receiving that card.
+function soloAtBotTurn() {
+  for (;;) {
+    const { store, clock } = clockedStore();
+    const room = store.createRoom(tok(1), 'Solo');
+    store.startGame(tok(1));
+    const r = room.round;
+    store.pass(tok(1), chooseBotCard(r.hands[room.players[0].id], r.receivedCardId).id);
+    if (room.phase === 'playing') return { store, clock, room };
+  }
+}
+
 test('bots move 1.2-2s into their turn', () => {
-  const { store, clock } = clockedStore();
-  const room = store.createRoom(tok(1), 'Solo');
-  store.startGame(tok(1));
-  const r = room.round;
-  store.pass(tok(1), chooseBotCard(r.hands[room.players[0].id], r.receivedCardId).id);
+  const { store, clock, room } = soloAtBotTurn();
   assert.ok(isBotTurn(room));
   const wait = store.pendingTurn(room).dueAt - clock.t;
   assert.ok(wait >= BOT_MIN_MS && wait <= BOT_MIN_MS + BOT_JITTER_MS, `bot wait ${wait}`);
@@ -211,11 +220,7 @@ test('a person who runs out of time gets a card passed for them', () => {
 });
 
 test('bot passes are not marked as timed out', () => {
-  const { store, clock } = clockedStore();
-  const room = store.createRoom(tok(1), 'Solo');
-  store.startGame(tok(1));
-  const r = room.round;
-  store.pass(tok(1), chooseBotCard(r.hands[room.players[0].id], r.receivedCardId).id);
+  const { store, clock, room } = soloAtBotTurn();
   runDueTurn(store, clock, room);
   assert.equal(room.round.lastPass.auto, undefined);
 });

@@ -32,8 +32,8 @@ No build step, bundler, linter or framework. The frontend is plain HTML/CSS/JS s
 - Late joiners: joining while a game runs adds a `spectator: true` player who holds no cards and isn't in `round.order`. `nextRound` → `seatSpectators` swaps spectators into bot seats in place (join order, first bot first). If no bot seat is free they keep watching until `returnToLobby`, which clears `spectator`. Spectators count toward `MAX_PLAYERS`; a spectator leaving does **not** end the round.
 - Reshuffle votes (`room.vote`, one at a time; logic in `rooms.js` → `startVote` / `castVote` / `settleVote` / `expireVote`):
   - **Blocking** is detected in `passCard`: passing a card with the same *name* as the one just received while keeping a full hand of all-different names. `round.blockStreak[id]` counts consecutive blocking turns.
-  - `kind: 'manual'`: any seated human, once `round.passesSinceDeal >= voteAllowedAt` (15, or later after a failed vote: +`VOTE_COOLDOWN_PASSES`). Every seated player votes and all must say Yes.
-  - `kind: 'blocking'`: auto-started when someone's streak reaches `BLOCK_STREAK` (4) after the same 15-pass threshold. The blocker is excluded and a majority wins.
+  - `kind: 'manual'`: any seated human, once `round.passesSinceDeal >= voteAllowedAt` (60, or later after a failed vote: +`VOTE_COOLDOWN_PASSES`). Every seated player votes and all must say Yes.
+  - `kind: 'blocking'`: auto-started when someone's streak reaches `BLOCK_STREAK` (4) after the same 60-pass threshold. The blocker is excluded and a majority wins.
   - Bots always vote Yes, and the asker of a manual vote counts as Yes. At the 20s expiry, missing votes count as Yes for blocking votes; for manual votes only offline people's missing votes count as Yes.
   - Views never reveal the blocker (the message is "someone is blocking", by the user's choice).
   - A passed vote calls `reshuffle(round)`: same round and turn, fresh hands, no lock, `passesSinceDeal`/`blockStreak` reset, `reshuffles++`. `passCount` is never reset, and turn tickets include `reshuffles`. A win, a new deal, or returning to the lobby cancels a vote.

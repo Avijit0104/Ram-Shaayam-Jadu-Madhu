@@ -422,7 +422,7 @@
             <li>On your turn, pass one card to the next player. You have 30 seconds, or a card is passed for you.</li>
             <li>You can't pass the card you just received. You can pass it on a later turn.</li>
             <li>First to hold 4 cards of the same name wins the round.</li>
-            <li>Game stuck? After 15 passes anyone can ask to reshuffle all cards; everyone must agree.</li>
+            <li>Game stuck? After 60 passes anyone can ask to reshuffle all cards; everyone must agree.</li>
             <li>If someone keeps blocking (holding one of each name and passing on what they get), a vote starts automatically. Majority wins, and the blocker can't vote.</li>
             <li>Joined late? Watch the round, then take a bot's seat in the next one.</li>
           </ol>
